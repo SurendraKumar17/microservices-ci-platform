@@ -3,11 +3,11 @@ name: Production GitOps CI
 on:
   push:
     branches:
-      - main
       - develop
-      - 'feature/**'    # push to feature branch → lint + secret scan + sonar (no deploy)
-      - 'release/**'    # push to release branch → full scan + staging deploy
-      - 'hotfix/**'     # push to hotfix branch  → fast path (lint + secrets only)
+      # - main
+      # - 'feature/**'    # push to feature branch → lint + secret scan + sonar (no deploy)
+      # - 'release/**'    # push to release branch → full scan + staging deploy
+      # - 'hotfix/**'     # push to hotfix branch  → fast path (lint + secrets only)
     paths:
       - 'services/**'
       - 'gitops/**'
@@ -476,9 +476,10 @@ jobs:
       !contains(needs.*.result, 'cancelled')
     environment:
       name: production
-      url: ${{ secrets.PROD_URL }}
     steps:
       - name: Approval confirmed
+        env:
+           PROD_URL: ${{ secrets.PROD_URL }}
         run: |
           echo "✅ Production deployment approved by release manager"
           echo "   GitOps update will now push to prod values.yaml"
