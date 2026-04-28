@@ -416,7 +416,7 @@ jobs:
         with:
           args: >
             -Dsonar.projectKey=Surendra_Pandrinki_microservices-gitops-platform
-            -Dsonar.organization=surendra_pandrinki
+            -Dsonar.organization=Surendra_Pandrinki
             -Dsonar.sources=services
             -Dsonar.exclusions=**/node_modules/**,**/*.test.*,**/vendor/**
 
