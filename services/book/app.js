@@ -200,3 +200,4 @@ initDB()
   .then(() => app.listen(PORT, () =>
     console.log(`Booking service running on port ${PORT}`)))
   .catch(err => { console.error('DB init failed:', err); process.exit(1); }); 
+ 
