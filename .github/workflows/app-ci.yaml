@@ -775,9 +775,10 @@ jobs:
       needs.post-deploy-staging.result == 'success'
     environment:
       name: staging
-      url: ${{ secrets.STAGING_URL }}
     steps:
       - name: QA gate passed
+        env:
+          STAGING_URL: ${{ secrets.STAGING_URL }}
         run: |
           echo "✅ QA team and product owner have signed off"
           echo "   Release is approved to merge to main → prod"
