@@ -420,12 +420,13 @@ jobs:
             -Dsonar.sources=services
             -Dsonar.exclusions=**/node_modules/**,**/*.test.*,**/vendor/**
 
-      - name: SonarQube Quality Gate
-        uses: sonarsource/sonarqube-quality-gate-action@master
-        timeout-minutes: 5
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          SONAR_HOST_URL: https://sonarcloud.io
+      # Quality Gate API requires SonarCloud Plan
+      # - name: SonarQube Quality Gate
+      #   uses: sonarsource/sonarqube-quality-gate-action@master
+      #   timeout-minutes: 5
+      #   env:
+      #     SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+      #     SONAR_HOST_URL: https://sonarcloud.io
 
   # ─────────────────────────────────────────────────────────────────
   # 6. TRIVY IaC SCAN — release/* and main only
