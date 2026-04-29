@@ -143,15 +143,20 @@ jobs:
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
         with:
           args: >
+            -Dsonar.projectKey=Surendra_Pandrinki_microservices-gitops-platform
+            -Dsonar.organization=surendrakumar17
+            -Dsonar.sources=services
+            -Dsonar.exclusions=**/node_modules/**,**/*.test.*,**/vendor/**
             -Dsonar.pullrequest.key=${{ github.event.pull_request.number }}
             -Dsonar.pullrequest.branch=${{ github.head_ref }}
             -Dsonar.pullrequest.base=${{ github.base_ref }}
 
-      - name: SonarQube Quality Gate
-        uses: sonarsource/sonarqube-quality-gate-action@master
-        timeout-minutes: 5
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+  # Quality gate comment out — free plan limitation
+  # - name: SonarQube Quality Gate
+  #   uses: sonarsource/sonarqube-quality-gate-action@master
+  #   timeout-minutes: 5
+  #   env:
+  #     SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 
   # ─────────────────────────────────────────────────────────────────
   # 1b. FEATURE BRANCH PUSH  (feature/** direct push — no deploy)
@@ -198,16 +203,22 @@ jobs:
       - name: SonarQube SAST (feature branch scan)
         uses: sonarsource/sonarqube-scan-action@master
         env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
         with:
-          args: -Dsonar.branch.name=${{ github.ref_name }}
+          args: >
+              -Dsonar.projectKey=Surendra_Pandrinki_microservices-gitops-platform
+              -Dsonar.organization=surendrakumar17
+              -Dsonar.sources=services
+              -Dsonar.exclusions=**/node_modules/**,**/*.test.*,**/vendor/**
+              -Dsonar.branch.name=${{ github.ref_name }}
 
-      - name: SonarQube Quality Gate
-        uses: sonarsource/sonarqube-quality-gate-action@master
-        timeout-minutes: 5
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+  # Quality gate commented out — free plan limitation
+  # - name: SonarQube Quality Gate
+  #   uses: sonarsource/sonarqube-quality-gate-action@master
+  #   timeout-minutes: 5
+  #   env:
+  #     SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 
   # ─────────────────────────────────────────────────────────────────
   # 1c. HOTFIX BRANCH PUSH  (hotfix/** — emergency fast path)
