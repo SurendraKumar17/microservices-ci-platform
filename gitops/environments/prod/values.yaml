@@ -3,10 +3,25 @@ global:
   env: prod
 
 frontend:
-  tag: placeholder
-reservation:
-  tag: placeholder
+  replicas: 3
+  maxReplicas: 10
+  tag: "prod-bbed7bda"
+
+book:
+  replicas: 3
+  maxReplicas: 10
+  tag: "prod-7a437481"
+
 search:
-  tag: placeholder
+  replicas: 3
+  maxReplicas: 10
+  tag: "prod-bbed7bda"
+
 user:
-  tag: placeholder
+  replicas: 3
+  maxReplicas: 10
+  tag: "prod-bbed7bda"
+
+postgres:
+  host: prod-microservices-postgres.cg9mq6cuoriv.us-east-1.rds.amazonaws.com
+  user: bookinguser
