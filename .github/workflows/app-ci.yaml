@@ -382,6 +382,16 @@ jobs:
           docker push $ECR_REGISTRY/${{ matrix.service }}:latest-$DEPLOY_ENV
 
       # ── Trivy image scan ──────────────────────────────────────────
+      - name: Trivy — debug table output
+        if: steps.check.outputs.changed == 'true'
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.ECR_REGISTRY }}/${{ matrix.service }}:${{ env.TAG }}
+          format: table
+          exit-code: '0'
+          severity: CRITICAL,HIGH
+          scanners: vuln,secret
+
       # "exit-code was 0 before — silently passing.
       #  Changed to 1 after finding a CRITICAL in base image"
       - name: Trivy — image vulnerability scan
