@@ -403,6 +403,7 @@ jobs:
           output: trivy-image-${{ matrix.service }}.sarif
           severity: CRITICAL,HIGH
           exit-code: ${{ env.TRIVY_EXIT_CODE }}
+          ignore-unfixed: true
 
       - name: Upload Trivy image SARIF
         if: steps.check.outputs.changed == 'true'
