@@ -2,7 +2,8 @@ FROM node:20-alpine
 
 WORKDIR /app
 
-RUN apk update && apk upgrade --no-cache
+RUN apk update && apk upgrade --no-cache && \
+    apk info zlib    # ← add this to see exact zlib version in build logs
 
 COPY package*.json ./
 RUN npm install --omit=dev && npm cache clean --force
