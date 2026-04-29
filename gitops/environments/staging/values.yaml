@@ -1,0 +1,22 @@
+global:
+  registry: 635457411372.dkr.ecr.us-east-1.amazonaws.com
+  env: staging
+frontend:
+  replicas: 1
+  maxReplicas: 4
+  tag: "staging-latest"
+book:
+  replicas: 1
+  maxReplicas: 4
+  tag: "staging-latest"
+search:
+  replicas: 1
+  maxReplicas: 4
+  tag: "staging-latest"
+user:
+  replicas: 1
+  maxReplicas: 4
+  tag: "staging-latest"
+postgres:
+  host: dev-microservices-postgres.cg9mq6cuoriv.us-east-1.rds.amazonaws.com
+  user: bookinguser
