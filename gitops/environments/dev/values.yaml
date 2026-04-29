@@ -8,7 +8,7 @@ frontend:
 book:
   replicas: 1
   maxReplicas: 4
-  tag: "dev-bbed7bda"
+  tag: "dev-f571877f"
 search:
   replicas: 1
   maxReplicas: 4
