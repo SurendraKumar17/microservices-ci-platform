@@ -8,7 +8,7 @@ frontend:
 book:
   replicas: 1
   maxReplicas: 4
-  tag: "staging-latest"
+  tag: "staging-de840181"
 search:
   replicas: 1
   maxReplicas: 4
