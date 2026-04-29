@@ -151,12 +151,12 @@ jobs:
             -Dsonar.pullrequest.branch=${{ github.head_ref }}
             -Dsonar.pullrequest.base=${{ github.base_ref }}
 
-            # Quality gate comment out — free plan limitation
-            # - name: SonarQube Quality Gate
-            #   uses: sonarsource/sonarqube-quality-gate-action@master
-            #   timeout-minutes: 5
-            #   env:
-            #     SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+  # Quality gate comment out — free plan limitation
+  # - name: SonarQube Quality Gate
+  #   uses: sonarsource/sonarqube-quality-gate-action@master
+  #   timeout-minutes: 5
+  #   env:
+  #     SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 
   # ─────────────────────────────────────────────────────────────────
   # 1b. FEATURE BRANCH PUSH  (feature/** direct push — no deploy)
@@ -213,13 +213,13 @@ jobs:
               -Dsonar.exclusions=**/node_modules/**,**/*.test.*,**/vendor/**
               -Dsonar.branch.name=${{ github.ref_name }}
 
-              # Quality gate commented out — free plan limitation
-              # - name: SonarQube Quality Gate
-              #   uses: sonarsource/sonarqube-quality-gate-action@master
-              #   timeout-minutes: 5
-              #   env:
-              #     SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-              
+  # Quality gate commented out — free plan limitation
+  # - name: SonarQube Quality Gate
+  #   uses: sonarsource/sonarqube-quality-gate-action@master
+  #   timeout-minutes: 5
+  #   env:
+  #     SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
   # ─────────────────────────────────────────────────────────────────
   # 1c. HOTFIX BRANCH PUSH  (hotfix/** — emergency fast path)
   #     Secrets + lint only — no heavy scans, no deploy.
