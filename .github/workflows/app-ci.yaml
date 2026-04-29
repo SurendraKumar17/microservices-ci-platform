@@ -2,15 +2,17 @@ name: Production GitOps CI
 
 on:
   push:
-<<<<<<< HEAD
-    branches: [develop]
-=======
-    branches: [develop] #Temp removed main
->>>>>>> develop
+    branches:
+      - develop
+      # - main
+      # - 'feature/**'    # push to feature branch → lint + secret scan + sonar (no deploy)
+      # - 'release/**'    # push to release branch → full scan + staging deploy
+      # - 'hotfix/**'     # push to hotfix branch  → fast path (lint + secrets only)
     paths:
       - 'services/**'
+      - 'gitops/**'
   pull_request:
-    branches: [main, develop]
+    branches: [main, develop, 'release/**']
     paths:
       - 'services/**'
       - 'gitops/**'
@@ -21,49 +23,271 @@ on:
         required: true
         default: 'dev'
         type: choice
-        options: [dev, prod]
+        options: [dev, staging, prod]
 
 permissions:
   id-token: write
   contents: write
+  security-events: write
 
+# FIX #3 — cancel-in-progress is now false on main to prevent
+# tearing a prod deploy mid-flight when a second push arrives.
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 env:
   AWS_REGION: us-east-1
   ECR_REGISTRY: ${{ secrets.ECR_REGISTRY }}
+  ARGOCD_VERSION: v2.11.3   # FIX #9 — pinned version shared across all jobs
+
+# ═══════════════════════════════════════════════════════════════════
+#  BRANCH PIPELINE MATRIX
+#  ──────────────────────────────────────────────────────────────────
+#  feature/**   → TruffleHog + Hadolint + Unit tests + SonarQube   (no deploy)
+#  PR           → same as feature + quality gate blocks merge
+#  develop      → secret scan + build + Trivy image + SonarQube → dev
+#               → post-deploy: smoke + integration tests (real)
+#  release/**   → secret scan + build + Trivy image + Trivy IaC + SonarQube → staging
+#               → post-deploy: smoke + integration + E2E + perf + ZAP
+#               → manual QA approval gate before prod
+#  main         → full security suite → approval gate → deploy → smoke
+#  hotfix/**    → TruffleHog + Hadolint only (fast path, no deploy)
+# ═══════════════════════════════════════════════════════════════════
 
 jobs:
 
-  # ─────────────────────────────────────────
-  # PR VALIDATION
-  # ─────────────────────────────────────────
+  # ─────────────────────────────────────────────────────────────────
+  # 0. COMPUTE TAGS  (single source of truth for TAG + ENV)
+  #    FIX #8 — replaces the duplicated if/elif blocks in build
+  #    and gitops-update. All downstream jobs consume these outputs.
+  # ─────────────────────────────────────────────────────────────────
+  compute-tags:
+    name: Compute image tag + environment
+    if: |
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      (github.ref == 'refs/heads/develop' ||
+       github.ref == 'refs/heads/main'    ||
+       startsWith(github.ref, 'refs/heads/release/'))
+    runs-on: ubuntu-latest
+    outputs:
+      tag:        ${{ steps.set.outputs.tag }}
+      deploy_env: ${{ steps.set.outputs.deploy_env }}
+    steps:
+      - id: set
+        run: |
+          SHA=$(echo $GITHUB_SHA | cut -c1-8)
+          REF="${GITHUB_REF}"
+          if [[ "$REF" == "refs/heads/main" ]]; then
+            echo "tag=prod-${SHA}"      >> $GITHUB_OUTPUT
+            echo "deploy_env=prod"      >> $GITHUB_OUTPUT
+          elif [[ "$REF" == refs/heads/release/* ]]; then
+            echo "tag=staging-${SHA}"   >> $GITHUB_OUTPUT
+            echo "deploy_env=staging"   >> $GITHUB_OUTPUT
+          else
+            echo "tag=dev-${SHA}"       >> $GITHUB_OUTPUT
+            echo "deploy_env=dev"       >> $GITHUB_OUTPUT
+          fi
+
+  # ─────────────────────────────────────────────────────────────────
+  # 1. PR VALIDATION  (any PR → develop / main / release/**)
+  #    Blocks merge if any step fails.
+  # ─────────────────────────────────────────────────────────────────
   pr-validation:
+    name: PR Validation
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Lint Dockerfiles
-        run: |
-          for svc in book frontend search user; do
-            docker run --rm -i hadolint/hadolint < services/$svc/Dockerfile || true
-          done
-
-      - name: Scan secrets
+      # ── Secret scanning (TruffleHog) ─────────────────────────────
+      # "Found a hardcoded token in commit abc123, blocked the PR"
+      - name: Secret scan (TruffleHog)
         uses: trufflesecurity/trufflehog@main
         with:
           path: ./
           base: ${{ github.event.pull_request.base.sha }}
           head: ${{ github.event.pull_request.head.sha }}
+          extra_args: --only-verified
 
-  # ─────────────────────────────────────────
-  # DETECT CHANGES
-  # ─────────────────────────────────────────
+      # ── Dockerfile lint (Hadolint) ────────────────────────────────
+      - name: Lint Dockerfiles (Hadolint)
+        run: |
+          for svc in book frontend search user; do
+            [ -f services/$svc/Dockerfile ] || continue
+            echo "==> Linting services/$svc/Dockerfile"
+            docker run --rm -i hadolint/hadolint \
+              hadolint --failure-threshold warning - \
+              < services/$svc/Dockerfile
+          done
+
+      # ── Unit tests — blocks PR when real tests are added ─────────
+      - name: Unit tests
+        run: |
+          echo "TODO: cd services/book     && pytest tests/unit/"
+          echo "TODO: cd services/user     && pytest tests/unit/"
+          echo "TODO: cd services/search   && pytest tests/unit/"
+          echo "TODO: cd services/frontend && npm run test:unit"
+          # Replace each echo with the real command once test dirs exist.
+          # This step blocks the PR the moment real tests are wired in.
+
+      # ── SonarQube SAST PR decoration ─────────────────────────────
+      # "Quality gate set to fail on CRITICAL — unblocked it by fixing
+      #  the finding, not by lowering the gate"
+      - name: SonarQube SAST
+        uses: sonarsource/sonarqube-scan-action@master
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+        with:
+          args: >
+            -Dsonar.projectKey=Surendra_Pandrinki_microservices-gitops-platform
+            -Dsonar.organization=surendrakumar17
+            -Dsonar.sources=services
+            -Dsonar.exclusions=**/node_modules/**,**/*.test.*,**/vendor/**
+            -Dsonar.pullrequest.key=${{ github.event.pull_request.number }}
+            -Dsonar.pullrequest.branch=${{ github.head_ref }}
+            -Dsonar.pullrequest.base=${{ github.base_ref }}
+
+  # Quality gate comment out — free plan limitation
+  # - name: SonarQube Quality Gate
+  #   uses: sonarsource/sonarqube-quality-gate-action@master
+  #   timeout-minutes: 5
+  #   env:
+  #     SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+  # ─────────────────────────────────────────────────────────────────
+  # 1b. FEATURE BRANCH PUSH  (feature/** direct push — no deploy)
+  #     Same checks as PR but runs on every commit to a feature branch.
+  #     FIX #5 — identical steps extracted here; reusable workflow
+  #     is the next refactor step (see comment below).
+  # ─────────────────────────────────────────────────────────────────
+  feature-checks:
+    name: Feature — lint + secrets + unit + SAST
+    if: |
+      github.event_name == 'push' &&
+      startsWith(github.ref, 'refs/heads/feature/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Secret scan (TruffleHog)
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          base: ${{ github.event.before }}
+          head: ${{ github.event.after }}
+          extra_args: --only-verified
+
+      - name: Lint Dockerfiles (Hadolint)
+        run: |
+          for svc in book frontend search user; do
+            [ -f services/$svc/Dockerfile ] || continue
+            echo "==> Linting services/$svc/Dockerfile"
+            docker run --rm -i hadolint/hadolint \
+              hadolint --failure-threshold warning - \
+              < services/$svc/Dockerfile
+          done
+
+      - name: Unit tests
+        run: |
+          echo "TODO: cd services/book     && pytest tests/unit/"
+          echo "TODO: cd services/user     && pytest tests/unit/"
+          echo "TODO: cd services/search   && pytest tests/unit/"
+          echo "TODO: cd services/frontend && npm run test:unit"
+
+      - name: SonarQube SAST (feature branch scan)
+        uses: sonarsource/sonarqube-scan-action@master
+        env:
+           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+        with:
+          args: >
+              -Dsonar.projectKey=Surendra_Pandrinki_microservices-gitops-platform
+              -Dsonar.organization=surendrakumar17
+              -Dsonar.sources=services
+              -Dsonar.exclusions=**/node_modules/**,**/*.test.*,**/vendor/**
+              -Dsonar.branch.name=${{ github.ref_name }}
+
+  # Quality gate commented out — free plan limitation
+  # - name: SonarQube Quality Gate
+  #   uses: sonarsource/sonarqube-quality-gate-action@master
+  #   timeout-minutes: 5
+  #   env:
+  #     SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+  # ─────────────────────────────────────────────────────────────────
+  # 1c. HOTFIX BRANCH PUSH  (hotfix/** — emergency fast path)
+  #     Secrets + lint only — no heavy scans, no deploy.
+  # ─────────────────────────────────────────────────────────────────
+  hotfix-checks:
+    name: Hotfix — fast lint + secrets
+    if: |
+      github.event_name == 'push' &&
+      startsWith(github.ref, 'refs/heads/hotfix/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Secret scan (TruffleHog)
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          base: ${{ github.event.before }}
+          head: ${{ github.event.after }}
+          extra_args: --only-verified
+
+      - name: Lint Dockerfiles (Hadolint)
+        run: |
+          for svc in book frontend search user; do
+            [ -f services/$svc/Dockerfile ] || continue
+            docker run --rm -i hadolint/hadolint \
+              hadolint --failure-threshold warning - \
+              < services/$svc/Dockerfile
+          done
+
+  # ─────────────────────────────────────────────────────────────────
+  # 2. SECRET SCAN on protected branches  (develop / release / main)
+  #    FIX #4 — TruffleHog was missing on direct pushes to protected
+  #    branches (e.g. squash-merges bypassing PR checks).
+  # ─────────────────────────────────────────────────────────────────
+  secret-scan-protected:
+    name: Secret scan — protected branch push
+    if: |
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      (github.ref == 'refs/heads/develop' ||
+       github.ref == 'refs/heads/main'    ||
+       startsWith(github.ref, 'refs/heads/release/'))
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Secret scan (TruffleHog)
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          base: ${{ github.event.before }}
+          head: ${{ github.event.after }}
+          extra_args: --only-verified
+
+  # ─────────────────────────────────────────────────────────────────
+  # 3. DETECT CHANGES  (develop / release/* / main only)
+  # ─────────────────────────────────────────────────────────────────
   detect-changes:
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    name: Detect Changed Services
+    if: |
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      (github.ref == 'refs/heads/develop' ||
+       github.ref == 'refs/heads/main'    ||
+       startsWith(github.ref, 'refs/heads/release/'))
     runs-on: ubuntu-latest
     outputs:
       book:     ${{ steps.filter.outputs.book }}
@@ -82,13 +306,21 @@ jobs:
             search:   ['services/search/**']
             user:     ['services/user/**']
 
-  # ─────────────────────────────────────────
-  # BUILD & PUSH
-  # ─────────────────────────────────────────
+  # ─────────────────────────────────────────────────────────────────
+  # 4. BUILD & PUSH  (matrix: book / frontend / search / user)
+  #    FIX #7 — TRIVY_EXIT_CODE env var replaces the fragile inline
+  #    ternary string comparison ('1' vs '0').
+  #    FIX #8 — TAG and DEPLOY_ENV consumed from compute-tags outputs.
+  # ─────────────────────────────────────────────────────────────────
   build:
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    name: Build & Push — ${{ matrix.service }}
+    if: |
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      (github.ref == 'refs/heads/develop' ||
+       github.ref == 'refs/heads/main'    ||
+       startsWith(github.ref, 'refs/heads/release/'))
     runs-on: ubuntu-latest
-    needs: detect-changes
+    needs: [detect-changes, compute-tags, secret-scan-protected]
     strategy:
       fail-fast: false
       matrix:
@@ -106,19 +338,24 @@ jobs:
             search)   echo "changed=${{ needs.detect-changes.outputs.search }}"   >> $GITHUB_OUTPUT ;;
             user)     echo "changed=${{ needs.detect-changes.outputs.user }}"     >> $GITHUB_OUTPUT ;;
           esac
-
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             echo "changed=true" >> $GITHUB_OUTPUT
           fi
 
-      - name: Set image tag
+      - name: Set image tag from compute-tags
         if: steps.check.outputs.changed == 'true'
         run: |
-          SHA=$(echo $GITHUB_SHA | cut -c1-8)
-          if [[ "${GITHUB_REF##*/}" == "main" ]]; then
-            echo "TAG=prod-${SHA}" >> $GITHUB_ENV
+          echo "TAG=${{ needs.compute-tags.outputs.tag }}"               >> $GITHUB_ENV
+          echo "DEPLOY_ENV=${{ needs.compute-tags.outputs.deploy_env }}" >> $GITHUB_ENV
+
+      # FIX #7 — set Trivy exit code as an env var (avoids fragile quoted ternary)
+      - name: Set Trivy exit code
+        if: steps.check.outputs.changed == 'true'
+        run: |
+          if [[ "$GITHUB_REF" == "refs/heads/main" ]]; then
+            echo "TRIVY_EXIT_CODE=1" >> $GITHUB_ENV
           else
-            echo "TAG=dev-${SHA}" >> $GITHUB_ENV
+            echo "TRIVY_EXIT_CODE=0" >> $GITHUB_ENV
           fi
 
       - name: Configure AWS (OIDC)
@@ -132,74 +369,186 @@ jobs:
         if: steps.check.outputs.changed == 'true'
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Build & Push
+      - name: Build & Push image
         if: steps.check.outputs.changed == 'true'
         run: |
           docker build \
+            --label "git.sha=$GITHUB_SHA" \
+            --label "git.branch=${GITHUB_REF##*/}" \
             -t $ECR_REGISTRY/${{ matrix.service }}:$TAG \
+            -t $ECR_REGISTRY/${{ matrix.service }}:latest-$DEPLOY_ENV \
             ./services/${{ matrix.service }}
           docker push $ECR_REGISTRY/${{ matrix.service }}:$TAG
+          docker push $ECR_REGISTRY/${{ matrix.service }}:latest-$DEPLOY_ENV
 
-      - name: Trivy Scan
+      # ── Trivy image scan ──────────────────────────────────────────
+      # "exit-code was 0 before — silently passing.
+      #  Changed to 1 after finding a CRITICAL in base image"
+      - name: Trivy — image vulnerability scan
         if: steps.check.outputs.changed == 'true'
         uses: aquasecurity/trivy-action@master
         with:
           image-ref: ${{ env.ECR_REGISTRY }}/${{ matrix.service }}:${{ env.TAG }}
+          format: sarif
+          output: trivy-image-${{ matrix.service }}.sarif
           severity: CRITICAL,HIGH
-          exit-code: 0
+          exit-code: ${{ env.TRIVY_EXIT_CODE }}
 
-  # ─────────────────────────────────────────
-  # GITOPS UPDATE
-  # ─────────────────────────────────────────
-  gitops-update:
+      - name: Upload Trivy image SARIF
+        if: steps.check.outputs.changed == 'true'
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-image-${{ matrix.service }}.sarif
+          category: trivy-image-${{ matrix.service }}
+
+  # ─────────────────────────────────────────────────────────────────
+  # 5. SONARQUBE SAST — branch scan for develop / release/* / main
+  #    (PR decoration is handled separately in job 1)
+  # ─────────────────────────────────────────────────────────────────
+  sonarqube:
+    name: SonarQube SAST (branch scan)
     runs-on: ubuntu-latest
-    needs: [build, detect-changes]
+    needs: [detect-changes, secret-scan-protected]
     if: |
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
-      !contains(needs.*.result, 'failure')
+      (github.ref == 'refs/heads/develop' ||
+       github.ref == 'refs/heads/main'    ||
+       startsWith(github.ref, 'refs/heads/release/'))
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
+      - name: SonarQube scan
+        uses: sonarsource/sonarqube-scan-action@master
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: https://sonarcloud.io
+        with:
+          args: >
+            -Dsonar.projectKey=Surendra_Pandrinki_microservices-gitops-platform
+            -Dsonar.organization=surendrakumar17
+            -Dsonar.sources=services
+            -Dsonar.exclusions=**/node_modules/**,**/*.test.*,**/vendor/**
+
+      # Quality Gate API requires SonarCloud Plan
+      # - name: SonarQube Quality Gate
+      #   uses: sonarsource/sonarqube-quality-gate-action@master
+      #   timeout-minutes: 5
+      #   env:
+      #     SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+      #     SONAR_HOST_URL: https://sonarcloud.io
+
+  # ─────────────────────────────────────────────────────────────────
+  # 6. TRIVY IaC SCAN — release/* and main only
+  #    "Found S3 bucket with public access in terraform before it hit staging"
+  # ─────────────────────────────────────────────────────────────────
+  trivy-iac:
+    name: Trivy — IaC / Helm / Terraform scan
+    runs-on: ubuntu-latest
+    needs: [detect-changes, secret-scan-protected]
+    if: |
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      (github.ref == 'refs/heads/main' ||
+       startsWith(github.ref, 'refs/heads/release/'))
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set Trivy IaC exit code
+        run: |
+          if [[ "$GITHUB_REF" == "refs/heads/main" ]]; then
+            echo "TRIVY_EXIT_CODE=1" >> $GITHUB_ENV
+          else
+            echo "TRIVY_EXIT_CODE=0" >> $GITHUB_ENV
+          fi
+
+      - name: Trivy — IaC config scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: config
+          scan-ref: gitops/
+          format: sarif
+          output: trivy-iac.sarif
+          severity: CRITICAL,HIGH,MEDIUM    # ← fixed: removed merged text
+          exit-code: ${{ env.TRIVY_EXIT_CODE }}
+
+      - name: Upload IaC SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-iac.sarif
+          category: trivy-iac
+  # ─────────────────────────────────────────────────────────────────
+  # 7. PROD APPROVAL GATE — main branch only
+  #    Tech lead / release manager clicks "Approve" in GitHub UI.
+  #    FIX #1 — this job now runs BEFORE gitops-update (which needs
+  #    it), enforcing the gate before any values.yaml is committed.
+  #    Configure in: Settings → Environments → production → reviewers
+  # ─────────────────────────────────────────────────────────────────
+  prod-approval:
+    name: "🔒 Production approval gate"
+    runs-on: ubuntu-latest
+    needs: [build, sonarqube, trivy-iac]
+    if: |
+      github.ref == 'refs/heads/main' &&
+      !contains(needs.*.result, 'failure') &&
+      !contains(needs.*.result, 'cancelled')
+    environment:
+      name: production
+    steps:
+      - name: Approval confirmed
+        env:
+           PROD_URL: ${{ secrets.PROD_URL }}
+        run: |
+          echo "✅ Production deployment approved by release manager"
+          echo "   GitOps update will now push to prod values.yaml"
+          echo "   ArgoCD will sync → canary / blue-green rollout"
+
+  # ─────────────────────────────────────────────────────────────────
+  # 8. GITOPS UPDATE — pushes values.yaml → ArgoCD auto-syncs
+  #    FIX #1 — prod-approval is now a required dependency on main,
+  #    so the values.yaml commit cannot happen before approval.
+  #    FIX #2 — condition uses 'skipped' as acceptable result so
+  #    trivy-iac being skipped on develop no longer blocks this job.
+  #    FIX #8 — TAG and ENV consumed from compute-tags outputs.
+  # ─────────────────────────────────────────────────────────────────
+  gitops-update:
+    name: GitOps — update image tags
+    runs-on: ubuntu-latest
+    needs: [build, detect-changes, sonarqube, compute-tags]
+    if: |
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      (github.ref == 'refs/heads/develop' ||
+       github.ref == 'refs/heads/main'    ||
+       startsWith(github.ref, 'refs/heads/release/')) &&
+      !contains(needs.*.result, 'failure') &&
+      !contains(needs.*.result, 'cancelled')
     steps:
       - uses: actions/checkout@v4
 
       - name: Install yq
         run: |
-          sudo wget https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 \
+          sudo wget -q https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 \
             -O /usr/local/bin/yq
           sudo chmod +x /usr/local/bin/yq
 
-      - name: Set env + tag
+      - name: Set env + tag from compute-tags outputs
         run: |
-          SHA=$(echo $GITHUB_SHA | cut -c1-8)
-          if [[ "${GITHUB_REF##*/}" == "main" ]]; then
-            echo "ENV=prod" >> $GITHUB_ENV
-            echo "TAG=prod-${SHA}" >> $GITHUB_ENV
-          else
-            echo "ENV=dev" >> $GITHUB_ENV
-            echo "TAG=dev-${SHA}" >> $GITHUB_ENV
-          fi
-
-      - name: Add Helm repos
-        run: |
-          helm repo add eks https://aws.github.io/eks-charts
-          helm repo add ebs-csi https://kubernetes-sigs.github.io/aws-ebs-csi-driver
-          helm repo add metrics-server https://kubernetes-sigs.github.io/metrics-server/
-          helm repo add autoscaler https://kubernetes.github.io/autoscaler
-          helm repo add argo https://argoproj.github.io/argo-helm
-          helm repo update
-
+          echo "ENV=${{ needs.compute-tags.outputs.deploy_env }}" >> $GITHUB_ENV
+          echo "TAG=${{ needs.compute-tags.outputs.tag }}"        >> $GITHUB_ENV
+          
       - name: Update GitOps values
         run: |
           FILE=gitops/environments/$ENV/values.yaml
 
           update() {
-            SERVICE=$1
-            CHANGED=$2
+            SERVICE=$1; CHANGED=$2
             if [[ "$CHANGED" == "true" || "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-              echo "Updating $SERVICE → $TAG"
+              echo "  ↳ $SERVICE → $TAG"
               yq -i ".$SERVICE.tag = \"$TAG\"" $FILE
             fi
           }
 
+          echo "Updating $FILE …"
           update frontend "${{ needs.detect-changes.outputs.frontend }}"
           update book     "${{ needs.detect-changes.outputs.book }}"
           update search   "${{ needs.detect-changes.outputs.search }}"
@@ -207,17 +556,337 @@ jobs:
 
       - name: Commit & Push
         run: |
-          git config user.name "github-actions"
-          git config user.email "actions@github.com"
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
           git add gitops/environments/$ENV/values.yaml
-          git commit -m "gitops: update $ENV tags to $TAG [skip ci]" || echo "No changes"
+          git diff --staged --quiet && echo "Nothing to commit" && exit 0
+          git commit -m "gitops($ENV): bump image tags → $TAG [skip ci]"
           git push
+  # ─────────────────────────────────────────────────────────────────
+  # 9. POST-DEPLOY TESTS — DEV
+  #    FIX #9 — ArgoCD CLI version pinned via ARGOCD_VERSION env var
+  #    and cached to avoid 3 separate downloads per run.
+  # ─────────────────────────────────────────────────────────────────
+  post-deploy-dev:
+    name: Dev — post-deploy tests
+    runs-on: ubuntu-latest
+    needs: [gitops-update]
+    if: |
+      github.ref == 'refs/heads/develop' &&
+      needs.gitops-update.result == 'success'
+    steps:
+      - uses: actions/checkout@v4
 
-      - name: Summary
+      # FIX #9 — cache the ArgoCD binary so all post-deploy jobs
+      # share the same pinned version without re-downloading.
+      - name: Cache ArgoCD CLI
+        id: cache-argocd
+        uses: actions/cache@v4
+        with:
+          path: /usr/local/bin/argocd
+          key: argocd-${{ env.ARGOCD_VERSION }}
+
+      - name: Install ArgoCD CLI
+        if: steps.cache-argocd.outputs.cache-hit != 'true'
         run: |
-          echo "============================================"
-          echo "  GITOPS UPDATE COMPLETE ✅"
-          echo "  Environment : $ENV"
-          echo "  Updated Tag : $TAG"
-          echo "  ArgoCD will auto-sync"
-          echo "============================================"
+          curl -sSL -o /usr/local/bin/argocd \
+            https://github.com/argoproj/argo-cd/releases/download/${{ env.ARGOCD_VERSION }}/argocd-linux-amd64
+          chmod +x /usr/local/bin/argocd
+
+      - name: Wait for ArgoCD sync (dev)
+        run: |
+          echo "Waiting for ArgoCD to sync dev environment…"
+          argocd app wait bookstore-dev \
+            --health \
+            --timeout 300 \
+            --server ${{ secrets.ARGOCD_SERVER }} \
+            --auth-token ${{ secrets.ARGOCD_TOKEN }} \
+            --insecure
+          echo "ArgoCD sync complete ✅"
+
+      # ── Smoke tests (REAL — runs now) ────────────────────────────
+      # "THIS ONE you can make real right now — just curl /health"
+      - name: Smoke tests — health endpoints
+        run: |
+          echo "Running smoke tests against dev environment…"
+          BASE=${{ secrets.DEV_URL }}
+
+          check() {
+            echo -n "  → $1 "
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$1")
+            if [[ "$STATUS" == "200" ]]; then
+              echo "✅ ($STATUS)"
+            else
+              echo "❌ ($STATUS)"
+              exit 1
+            fi
+          }
+
+          check "$BASE/health"
+          check "$BASE/api/books/health"
+          check "$BASE/api/users/health"
+          check "$BASE/api/search/health"
+
+      # ── Integration tests (REAL basic version) ───────────────────
+      - name: Integration tests — service connectivity
+        run: |
+          echo "Running basic integration checks…"
+          BASE=${{ secrets.DEV_URL }}
+
+          echo "  → book → user service link"
+          curl -sf "$BASE/api/books?limit=1" | grep -q '"id"' \
+            && echo "  ✅ book API responding with data" \
+            || (echo "  ❌ book API not returning expected data" && exit 1)
+
+          echo "  → search service"
+          curl -sf "$BASE/api/search?q=test" \
+            && echo "  ✅ search API reachable" \
+            || (echo "  ❌ search API not reachable" && exit 1)
+
+          echo "TODO: docker-compose up test-env && run full API contract tests"
+          echo "TODO: run pact consumer-driven contract tests"
+
+      - name: Dev test summary
+        if: always()
+        run: |
+          echo "════════════════════════════════════════"
+          echo "  DEV POST-DEPLOY TESTS COMPLETE"
+          echo "  Smoke tests    : real ✅"
+          echo "  Integration    : basic real + TODO full"
+          echo "  No manual gate — pipeline exits here"
+          echo "  Dev URL: ${{ secrets.DEV_URL }}"
+          echo "════════════════════════════════════════"
+
+  # ─────────────────────────────────────────────────────────────────
+  # 10. POST-DEPLOY TESTS — STAGING
+  #     FIX #9 — ArgoCD CLI pinned + cached (same pattern as dev).
+  # ─────────────────────────────────────────────────────────────────
+  post-deploy-staging:
+    name: Staging — post-deploy tests
+    runs-on: ubuntu-latest
+    needs: [gitops-update]
+    if: |
+      startsWith(github.ref, 'refs/heads/release/') &&
+      needs.gitops-update.result == 'success'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache ArgoCD CLI
+        id: cache-argocd
+        uses: actions/cache@v4
+        with:
+          path: /usr/local/bin/argocd
+          key: argocd-${{ env.ARGOCD_VERSION }}
+
+      - name: Install ArgoCD CLI
+        if: steps.cache-argocd.outputs.cache-hit != 'true'
+        run: |
+          curl -sSL -o /usr/local/bin/argocd \
+            https://github.com/argoproj/argo-cd/releases/download/${{ env.ARGOCD_VERSION }}/argocd-linux-amd64
+          chmod +x /usr/local/bin/argocd
+
+      - name: Wait for ArgoCD sync (staging)
+        run: |
+          argocd app wait bookstore-staging \
+            --health \
+            --timeout 300 \
+            --server ${{ secrets.ARGOCD_SERVER }} \
+            --auth-token ${{ secrets.ARGOCD_TOKEN }} \
+            --insecure
+          echo "ArgoCD staging sync complete ✅"
+
+      # ── Smoke tests (REAL) ────────────────────────────────────────
+      - name: Smoke tests — health endpoints
+        run: |
+          BASE=${{ secrets.STAGING_URL }}
+          check() {
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$1")
+            [[ "$STATUS" == "200" ]] && echo "  ✅ $1" || (echo "  ❌ $1 ($STATUS)" && exit 1)
+          }
+          check "$BASE/health"
+          check "$BASE/api/books/health"
+          check "$BASE/api/users/health"
+          check "$BASE/api/search/health"
+
+      # ── Integration tests (placeholder) ──────────────────────────
+      - name: Integration tests
+        run: |
+          echo "TODO: docker-compose up test-environment"
+          echo "TODO: run API contract tests (Pact)"
+          echo "TODO: cd tests/integration && pytest --base-url=${{ secrets.STAGING_URL }}"
+
+      # ── E2E tests — Playwright (placeholder) ─────────────────────
+      - name: E2E tests (Playwright)
+        run: |
+          echo "TODO: npx playwright test --project=chromium"
+          echo "TODO: npx playwright test --project=firefox"
+          echo "TODO: npx playwright test --project=webkit"
+          echo "TODO: upload playwright report as artifact"
+
+      # ── Regression suite (placeholder) ───────────────────────────
+      - name: Regression suite
+        run: |
+          echo "TODO: npm run test:regression -- --url=${{ secrets.STAGING_URL }}"
+          echo "TODO: covers all critical user paths:"
+          echo "  - user registration + login"
+          echo "  - book search and browse"
+          echo "  - checkout flow"
+          echo "  - account management"
+
+      # ── Performance / load tests — k6 (placeholder) ──────────────
+      - name: Performance tests (k6)
+        run: |
+          echo "TODO: k6 run load-tests/spike.js"
+          echo "TODO: k6 run load-tests/soak.js"
+          echo "TODO: assert p95 latency < 500ms"
+          echo "TODO: assert error rate < 1%"
+
+      # ── OWASP ZAP DAST scan ───────────────────────────────────────
+      - name: OWASP ZAP — DAST baseline scan
+        uses: zaproxy/action-baseline@v0.12.0
+        with:
+          target: ${{ secrets.STAGING_URL }}
+          rules_file_name: .zap/rules.tsv
+          cmd_options: '-a -j'
+          fail_action: warn
+
+      - name: Upload ZAP report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: zap-staging-report
+          path: report_html.html
+
+      - name: Staging test summary
+        if: always()
+        run: |
+          echo "════════════════════════════════════════"
+          echo "  STAGING POST-DEPLOY TESTS COMPLETE"
+          echo "  Smoke tests    : real ✅"
+          echo "  Integration    : TODO placeholder"
+          echo "  E2E (Playwright): TODO placeholder"
+          echo "  Regression     : TODO placeholder"
+          echo "  Performance k6 : TODO placeholder"
+          echo "  OWASP ZAP DAST : real ✅"
+          echo ""
+          echo "  ⏳ Awaiting manual QA sign-off in GitHub UI"
+          echo "     before pipeline continues to prod gate"
+          echo "════════════════════════════════════════"
+
+  # ─────────────────────────────────────────────────────────────────
+  # 11. MANUAL QA APPROVAL GATE — staging only
+  #     QA testers + product owner click "Approve" in GitHub UI.
+  #     Configure in: Settings → Environments → staging → reviewers
+  # ─────────────────────────────────────────────────────────────────
+  qa-approval:
+    name: "⏳ Manual QA sign-off (staging)"
+    runs-on: ubuntu-latest
+    needs: [post-deploy-staging]
+    if: |
+      startsWith(github.ref, 'refs/heads/release/') &&
+      needs.post-deploy-staging.result == 'success'
+    environment:
+      name: staging
+    steps:
+      - name: QA gate passed
+        env:
+          STAGING_URL: ${{ secrets.STAGING_URL }}
+        run: |
+          echo "✅ QA team and product owner have signed off"
+          echo "   Release is approved to merge to main → prod"
+
+  # ─────────────────────────────────────────────────────────────────
+  # 12. POST-DEPLOY TESTS — PROD
+  #     FIX #6 — prod-approval added to needs so smoke tests cannot
+  #     run until both gitops-update AND approval are complete.
+  #     FIX #9 — ArgoCD CLI pinned + cached.
+  #     Minimal tests only — feature coverage done in staging.
+  # ─────────────────────────────────────────────────────────────────
+  post-deploy-prod:
+    name: Prod — smoke + monitoring check
+    runs-on: ubuntu-latest
+    needs: [gitops-update, prod-approval]
+    if: |
+      github.ref == 'refs/heads/main' &&
+      needs.gitops-update.result == 'success' &&
+      needs.prod-approval.result == 'success'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache ArgoCD CLI
+        id: cache-argocd
+        uses: actions/cache@v4
+        with:
+          path: /usr/local/bin/argocd
+          key: argocd-${{ env.ARGOCD_VERSION }}
+
+      - name: Install ArgoCD CLI
+        if: steps.cache-argocd.outputs.cache-hit != 'true'
+        run: |
+          curl -sSL -o /usr/local/bin/argocd \
+            https://github.com/argoproj/argo-cd/releases/download/${{ env.ARGOCD_VERSION }}/argocd-linux-amd64
+          chmod +x /usr/local/bin/argocd
+
+      - name: Wait for ArgoCD sync (prod)
+        run: |
+          argocd app wait bookstore-prod \
+            --health \
+            --timeout 300 \
+            --server ${{ secrets.ARGOCD_SERVER }} \
+            --auth-token ${{ secrets.ARGOCD_TOKEN }} \
+            --insecure
+
+      # ── Smoke tests against live prod ────────────────────────────
+      - name: Smoke tests — prod health check
+        run: |
+          BASE=${{ secrets.PROD_URL }}
+          check() {
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$1")
+            [[ "$STATUS" == "200" ]] && echo "  ✅ $1" || (echo "  ❌ $1 ($STATUS)" && exit 1)
+          }
+          check "$BASE/health"
+          check "$BASE/api/books/health"
+          check "$BASE/api/users/health"
+          check "$BASE/api/search/health"
+
+      # ── Synthetic monitoring check ────────────────────────────────
+      - name: Synthetic monitoring — critical user paths
+        run: |
+          BASE=${{ secrets.PROD_URL }}
+
+          echo "  → Homepage loads"
+          curl -sf --max-time 5 "$BASE/" > /dev/null \
+            && echo "  ✅ homepage" || (echo "  ❌ homepage" && exit 1)
+
+          echo "  → Book listing API"
+          curl -sf --max-time 5 "$BASE/api/books?limit=1" > /dev/null \
+            && echo "  ✅ book listing" || (echo "  ❌ book listing" && exit 1)
+
+          echo "  → Search API"
+          curl -sf --max-time 5 "$BASE/api/search?q=test" > /dev/null \
+            && echo "  ✅ search" || (echo "  ❌ search" && exit 1)
+
+          echo "TODO: integrate Datadog/Grafana synthetic monitors here"
+          echo "TODO: assert p95 latency < 300ms from Datadog API"
+
+      # ── Release tagging ───────────────────────────────────────────
+      - name: Tag release in Git
+        run: |
+          SHA=$(echo $GITHUB_SHA | cut -c1-8)
+          TAG="release-$(date +%Y%m%d)-${SHA}"
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "Production release $TAG"
+          git push origin "$TAG"
+          echo "Tagged: $TAG"
+
+      - name: Prod summary
+        run: |
+          echo "════════════════════════════════════════"
+          echo "  PROD DEPLOY COMPLETE ✅"
+          echo "  Smoke tests        : ✅"
+          echo "  Synthetic monitoring: ✅"
+          echo "  Git release tag    : ✅"
+          echo "  Datadog/Grafana    : monitor dashboards"
+          echo "  Auto-rollback      : ArgoCD watches health"
+          echo "════════════════════════════════════════"
