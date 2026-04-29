@@ -4,13 +4,14 @@ on:
   push:
     branches:
       - develop
-      # - main
-      # - 'feature/**'    # push to feature branch → lint + secret scan + sonar (no deploy)
-      # - 'release/**'    # push to release branch → full scan + staging deploy
-      # - 'hotfix/**'     # push to hotfix branch  → fast path (lint + secrets only)
+      - main
+      - 'feature/**'    # push to feature branch → lint + secret scan + sonar (no deploy)
+      - 'release/**'    # push to release branch → full scan + staging deploy
+      - 'hotfix/**'     # push to hotfix branch  → fast path (lint + secrets only)
     paths:
       - 'services/**'
       - 'gitops/**'
+      - '.github/workflows/**' 
   pull_request:
     branches: [main, develop, 'release/**']
     paths:
