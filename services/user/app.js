@@ -93,4 +93,4 @@ function authenticate(req, res, next) { /* ... existing code ... */ }
 // ─────────────────────────────────────────
 initDB()
   .then(() => app.listen(PORT, () => console.log(`User service running on port ${PORT}`)))
-  .catch(err => { console.error('DB init failed:', err); process.exit(1); }); 
+  .catch(err => { console.error('DB init failed:', err); process.exit(1); });
