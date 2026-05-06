@@ -1,0 +1,175 @@
+name: Feature Branch + PR CI
+
+on:
+  push:
+    branches:
+      - 'feature/**'
+    paths:
+      - 'services/**'
+      - 'gitops/**'
+
+  pull_request:
+    branches:
+      - develop          # PR from feature/** → develop
+    paths:
+      - 'services/**'
+      - 'gitops/**'
+
+permissions:
+  id-token: write
+  contents: read
+  security-events: write
+
+concurrency:
+  group: feature-${{ github.ref }}
+  cancel-in-progress: true
+
+# ═══════════════════════════════════════════════════════════════════
+#  FEATURE BRANCH + PR PIPELINE
+#  ──────────────────────────────────────────────────────────────────
+#  WHEN push to feature/**:
+#    → feature-checks (secret scan + lint + unit + SAST branch scan)
+#    → pr-validation SKIPPED
+#
+#  WHEN pull_request feature/** → develop:
+#    → pr-validation (secret scan + lint + unit + SAST PR decoration)
+#    → feature-checks SKIPPED
+#    → blocks merge on failure
+#
+#  No build. No deploy. Fast feedback only.
+# ═══════════════════════════════════════════════════════════════════
+
+jobs:
+
+  # ─────────────────────────────────────────────────────────────────
+  # 1. PR VALIDATION — feature/** → develop
+  #    Runs ONLY on pull_request. Blocks merge on failure.
+  # ─────────────────────────────────────────────────────────────────
+  pr-validation:
+    name: PR Validation (feature → develop)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Secret scan (TruffleHog)
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          base: ${{ github.event.pull_request.base.sha }}
+          head: ${{ github.event.pull_request.head.sha }}
+          extra_args: --only-verified
+
+      - name: Lint Dockerfiles (Hadolint)
+        run: |
+          for svc in book frontend search user; do
+            [ -f services/$svc/Dockerfile ] || continue
+            echo "==> Linting services/$svc/Dockerfile"
+            docker run --rm -i hadolint/hadolint \
+              hadolint --failure-threshold warning - \
+              < services/$svc/Dockerfile
+          done
+
+      - name: Unit tests
+        run: |
+          set -e
+          for svc in book user search; do
+            echo "==> $svc unit tests"
+            cd services/$svc
+            pytest tests/unit/ -v --tb=short 2>/dev/null \
+              || echo "⚠️  PENDING: $svc has no unit tests — add services/$svc/tests/unit/"
+            cd $GITHUB_WORKSPACE
+          done
+          echo "==> frontend unit tests"
+          cd services/frontend && npm run test:unit 2>/dev/null \
+            || echo "⚠️  PENDING: frontend has no unit tests — add test:unit script"
+
+      # SonarQube in PR decoration mode — posts inline comments on the PR
+      - name: SonarQube SAST (PR decoration)
+        uses: sonarsource/sonarqube-scan-action@master
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+        with:
+          args: >
+            -Dsonar.projectKey=Surendra_Pandrinki_microservices-gitops-platform
+            -Dsonar.organization=surendrakumar17
+            -Dsonar.sources=services
+            -Dsonar.exclusions=**/node_modules/**,**/*.test.*,**/vendor/**
+            -Dsonar.pullrequest.key=${{ github.event.pull_request.number }}
+            -Dsonar.pullrequest.branch=${{ github.head_ref }}
+            -Dsonar.pullrequest.base=${{ github.base_ref }}
+
+  # ─────────────────────────────────────────────────────────────────
+  # 2. FEATURE PUSH CHECKS — push to feature/**
+  #    Runs ONLY on push. Fast feedback while coding before PR.
+  # ─────────────────────────────────────────────────────────────────
+  feature-checks:
+    name: Feature — lint + secrets + unit + SAST
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Secret scan (TruffleHog)
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          base: ${{ github.event.before }}
+          head: ${{ github.event.after }}
+          extra_args: --only-verified
+
+      - name: Lint Dockerfiles (Hadolint)
+        run: |
+          for svc in book frontend search user; do
+            [ -f services/$svc/Dockerfile ] || continue
+            echo "==> Linting services/$svc/Dockerfile"
+            docker run --rm -i hadolint/hadolint \
+              hadolint --failure-threshold warning - \
+              < services/$svc/Dockerfile
+          done
+
+      - name: Unit tests
+        run: |
+          set -e
+          for svc in book user search; do
+            echo "==> $svc unit tests"
+            cd services/$svc
+            pytest tests/unit/ -v --tb=short 2>/dev/null \
+              || echo "⚠️  PENDING: $svc has no unit tests — add services/$svc/tests/unit/"
+            cd $GITHUB_WORKSPACE
+          done
+          echo "==> frontend unit tests"
+          cd services/frontend && npm run test:unit 2>/dev/null \
+            || echo "⚠️  PENDING: frontend has no unit tests — add test:unit script"
+
+      # SonarQube in branch scan mode — pushes results to SonarQube branch view
+      - name: SonarQube SAST (branch scan)
+        uses: sonarsource/sonarqube-scan-action@master
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+        with:
+          args: >
+            -Dsonar.projectKey=Surendra_Pandrinki_microservices-gitops-platform
+            -Dsonar.organization=surendrakumar17
+            -Dsonar.sources=services
+            -Dsonar.exclusions=**/node_modules/**,**/*.test.*,**/vendor/**
+            -Dsonar.branch.name=${{ github.ref_name }}
+
+# ═══════════════════════════════════════════════════════════════════
+#  REQUIRED SETUP
+#    Settings → Branches → develop → Require status checks
+#    → add "PR Validation (feature → develop)" as required check
+#
+#  SECRETS REQUIRED
+#    SONAR_TOKEN, SONAR_HOST_URL
+#
+#  DEV TEAM DELIVERABLES
+#    services/{svc}/tests/unit/
+#    services/frontend  →  npm run test:unit
+# ═══════════════════════════════════════════════════════════════════

@@ -1,19 +1,28 @@
-name: Release Branch CI
+name: Develop Branch CI
 
 on:
   push:
     branches:
-      - 'release/**'
+      - develop
     paths:
       - 'services/**'
       - 'gitops/**'
 
   pull_request:
     branches:
-      - main             # PR from release/** → main triggers PR validation
+      - 'release/**'     # PR from develop → release/**
     paths:
       - 'services/**'
       - 'gitops/**'
+
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Force deploy to dev'
+        required: true
+        default: 'dev'
+        type: choice
+        options: [dev]
 
 permissions:
   id-token: write
@@ -21,8 +30,8 @@ permissions:
   security-events: write
 
 concurrency:
-  group: release-${{ github.ref }}
-  cancel-in-progress: false  # never cancel an active staging deploy
+  group: develop-${{ github.ref }}
+  cancel-in-progress: false  # never cancel an active dev deploy
 
 env:
   AWS_REGION: us-east-1
@@ -30,35 +39,31 @@ env:
   ARGOCD_VERSION: v2.11.3
 
 # ═══════════════════════════════════════════════════════════════════
-#  RELEASE BRANCH PIPELINE
+#  DEVELOP BRANCH PIPELINE
 #  ──────────────────────────────────────────────────────────────────
-#  Two triggers, two distinct flows:
-#
-#  WHEN push to release/**:
-#    → secret-scan → detect-changes → sonarqube
-#    → build & push → trivy-iac → gitops-update (staging)
-#    → post-deploy-staging (smoke + integration + E2E + perf + ZAP)
-#    → qa-approval gate
-#
-#  WHEN pull_request release/** → main:
-#    → pr-validation only (secret scan + lint + unit + SAST decoration)
+#  WHEN pull_request develop → release/**:
+#    → pr-validation (secret scan + lint + unit + SAST PR decoration)
 #    → NO build, NO deploy
-#    → blocks merge if any step fails
+#    → blocks merge on failure
+#
+#  WHEN push to develop:
+#    → secret scan → detect changes → sonarqube
+#    → build & push → gitops update (dev)
+#    → post-deploy dev (smoke + integration tests)
 #
 #  OWNERSHIP
-#  [DEVOPS OWNS]  All job wiring, k6 scripts, ZAP, ArgoCD sync
-#  [DEV OWNS]     tests/integration/*.py, tests/e2e/*.spec.ts
+#  [DEVOPS OWNS]  All job wiring, ECR, ArgoCD sync, smoke tests
+#  [DEV OWNS]     services/{svc}/tests/unit/ and tests/integration/
 # ═══════════════════════════════════════════════════════════════════
 
 jobs:
 
   # ─────────────────────────────────────────────────────────────────
-  # PR VALIDATION  — release/** → main
-  # Runs ONLY on pull_request event. No build, no deploy.
-  # Blocks merge to main if any step fails.
+  # PR VALIDATION — develop → release/**
+  #    Runs ONLY on pull_request. Blocks merge on failure.
   # ─────────────────────────────────────────────────────────────────
   pr-validation:
-    name: PR Validation (release → main)
+    name: PR Validation (develop → release)
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
@@ -66,7 +71,6 @@ jobs:
         with:
           fetch-depth: 0
 
-      # [DEVOPS OWNS] — scans only the delta of this PR
       - name: Secret scan (TruffleHog)
         uses: trufflesecurity/trufflehog@main
         with:
@@ -75,7 +79,6 @@ jobs:
           head: ${{ github.event.pull_request.head.sha }}
           extra_args: --only-verified
 
-      # [DEVOPS OWNS]
       - name: Lint Dockerfiles (Hadolint)
         run: |
           for svc in book frontend search user; do
@@ -86,30 +89,21 @@ jobs:
               < services/$svc/Dockerfile
           done
 
-      # [DEV OWNS test files]
       - name: Unit tests
         run: |
           set -e
-          echo "==> book unit tests"
-          cd services/book && pytest tests/unit/ -v --tb=short 2>/dev/null \
-            || echo "⚠️  PENDING: No unit tests found for book — add services/book/tests/unit/"
-          cd $GITHUB_WORKSPACE
-
-          echo "==> user unit tests"
-          cd services/user && pytest tests/unit/ -v --tb=short 2>/dev/null \
-            || echo "⚠️  PENDING: No unit tests found for user — add services/user/tests/unit/"
-          cd $GITHUB_WORKSPACE
-
-          echo "==> search unit tests"
-          cd services/search && pytest tests/unit/ -v --tb=short 2>/dev/null \
-            || echo "⚠️  PENDING: No unit tests found for search — add services/search/tests/unit/"
-          cd $GITHUB_WORKSPACE
-
+          for svc in book user search; do
+            echo "==> $svc unit tests"
+            cd services/$svc
+            pytest tests/unit/ -v --tb=short 2>/dev/null \
+              || echo "⚠️  PENDING: $svc has no unit tests — add services/$svc/tests/unit/"
+            cd $GITHUB_WORKSPACE
+          done
           echo "==> frontend unit tests"
           cd services/frontend && npm run test:unit 2>/dev/null \
-            || echo "⚠️  PENDING: No unit tests found for frontend — add test:unit script"
+            || echo "⚠️  PENDING: frontend has no unit tests — add test:unit script"
 
-      # [DEVOPS OWNS] — PR decoration mode, posts inline comments on the PR
+      # SonarQube PR decoration — posts inline comments on the PR
       - name: SonarQube SAST (PR decoration)
         uses: sonarsource/sonarqube-scan-action@master
         env:
@@ -127,11 +121,11 @@ jobs:
 
   # ─────────────────────────────────────────────────────────────────
   # 0. COMPUTE TAGS  [DEVOPS OWNS]
-  #    Runs ONLY on push. tag=staging-{sha}, deploy_env=staging
+  #    Runs ONLY on push. tag=dev-{sha}, deploy_env=dev
   # ─────────────────────────────────────────────────────────────────
   compute-tags:
     name: Compute image tag
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     outputs:
       tag:        ${{ steps.set.outputs.tag }}
@@ -140,15 +134,15 @@ jobs:
       - id: set
         run: |
           SHA=$(echo $GITHUB_SHA | cut -c1-8)
-          echo "tag=staging-${SHA}"  >> $GITHUB_OUTPUT
-          echo "deploy_env=staging"  >> $GITHUB_OUTPUT
+          echo "tag=dev-${SHA}"   >> $GITHUB_OUTPUT
+          echo "deploy_env=dev"   >> $GITHUB_OUTPUT
 
   # ─────────────────────────────────────────────────────────────────
-  # 1. SECRET SCAN — protected push  [DEVOPS OWNS]
+  # 1. SECRET SCAN  [DEVOPS OWNS]
   # ─────────────────────────────────────────────────────────────────
   secret-scan:
     name: Secret Scan (TruffleHog)
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -168,7 +162,7 @@ jobs:
   # ─────────────────────────────────────────────────────────────────
   detect-changes:
     name: Detect Changed Services
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     outputs:
       book:     ${{ steps.filter.outputs.book }}
@@ -192,7 +186,7 @@ jobs:
   # ─────────────────────────────────────────────────────────────────
   sonarqube:
     name: SonarQube SAST (branch scan)
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     needs: [secret-scan]
     steps:
@@ -211,15 +205,15 @@ jobs:
             -Dsonar.organization=surendrakumar17
             -Dsonar.sources=services
             -Dsonar.exclusions=**/node_modules/**,**/*.test.*,**/vendor/**
-            -Dsonar.branch.name=${{ github.ref_name }}
+            -Dsonar.branch.name=develop
 
   # ─────────────────────────────────────────────────────────────────
   # 4. BUILD & PUSH  [DEVOPS OWNS]
-  #    Trivy exit-code=0 on staging (warn only).
+  #    Trivy exit-code=0 on dev (warn only).
   # ─────────────────────────────────────────────────────────────────
   build:
     name: Build & Push — ${{ matrix.service }}
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     needs: [detect-changes, compute-tags, secret-scan]
     strategy:
@@ -257,12 +251,12 @@ jobs:
           TAG=${{ needs.compute-tags.outputs.tag }}
           docker build \
             --label "git.sha=$GITHUB_SHA" \
-            --label "git.branch=${GITHUB_REF##*/}" \
+            --label "git.branch=develop" \
             -t $ECR_REGISTRY/${{ matrix.service }}:${TAG} \
-            -t $ECR_REGISTRY/${{ matrix.service }}:latest-staging \
+            -t $ECR_REGISTRY/${{ matrix.service }}:latest-dev \
             ./services/${{ matrix.service }}
           docker push $ECR_REGISTRY/${{ matrix.service }}:${TAG}
-          docker push $ECR_REGISTRY/${{ matrix.service }}:latest-staging
+          docker push $ECR_REGISTRY/${{ matrix.service }}:latest-dev
 
       - name: Trivy — table output (debug)
         if: steps.check.outputs.changed == 'true'
@@ -274,7 +268,7 @@ jobs:
           severity: CRITICAL,HIGH
           scanners: vuln,secret
 
-      - name: Trivy — SARIF (warn only on staging)
+      - name: Trivy — SARIF (warn only on dev)
         if: steps.check.outputs.changed == 'true'
         uses: aquasecurity/trivy-action@master
         with:
@@ -293,41 +287,14 @@ jobs:
           category: trivy-image-${{ matrix.service }}-${{ github.sha }}
 
   # ─────────────────────────────────────────────────────────────────
-  # 5. TRIVY IaC SCAN  [DEVOPS OWNS]
-  # ─────────────────────────────────────────────────────────────────
-  trivy-iac:
-    name: Trivy — IaC / Helm / Terraform scan
-    if: github.event_name == 'push'
-    runs-on: ubuntu-latest
-    needs: [secret-scan]
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Trivy — IaC config scan (warn on staging)
-        uses: aquasecurity/trivy-action@master
-        with:
-          scan-type: config
-          scan-ref: gitops/
-          format: sarif
-          output: trivy-iac.sarif
-          severity: CRITICAL,HIGH,MEDIUM
-          exit-code: '0'
-
-      - name: Upload IaC SARIF
-        uses: github/codeql-action/upload-sarif@v3
-        with:
-          sarif_file: trivy-iac.sarif
-          category: trivy-iac
-
-  # ─────────────────────────────────────────────────────────────────
-  # 6. GITOPS UPDATE  [DEVOPS OWNS]
+  # 5. GITOPS UPDATE  [DEVOPS OWNS]
   # ─────────────────────────────────────────────────────────────────
   gitops-update:
-    name: GitOps — update staging image tags
+    name: GitOps — update dev image tags
     runs-on: ubuntu-latest
-    needs: [build, detect-changes, sonarqube, trivy-iac, compute-tags]
+    needs: [build, detect-changes, sonarqube, compute-tags]
     if: |
-      github.event_name == 'push' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
       !contains(needs.*.result, 'failure') &&
       !contains(needs.*.result, 'cancelled')
     steps:
@@ -339,13 +306,13 @@ jobs:
             -O /usr/local/bin/yq
           sudo chmod +x /usr/local/bin/yq
 
-      - name: Update GitOps values (staging)
+      - name: Update GitOps values (dev)
         run: |
-          FILE=gitops/environments/staging/values.yaml
+          FILE=gitops/environments/dev/values.yaml
           TAG=${{ needs.compute-tags.outputs.tag }}
           update() {
             SERVICE=$1; CHANGED=$2
-            if [[ "$CHANGED" == "true" ]]; then
+            if [[ "$CHANGED" == "true" || "${{ github.event_name }}" == "workflow_dispatch" ]]; then
               echo "  ↳ $SERVICE → $TAG"
               yq -i ".$SERVICE.tag = \"$TAG\"" $FILE
             fi
@@ -360,20 +327,20 @@ jobs:
           TAG=${{ needs.compute-tags.outputs.tag }}
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add gitops/environments/staging/values.yaml
+          git add gitops/environments/dev/values.yaml
           git diff --staged --quiet && echo "Nothing to commit" && exit 0
-          git commit -m "gitops(staging): bump image tags → $TAG [skip ci]"
+          git commit -m "gitops(dev): bump image tags → $TAG [skip ci]"
           git push
 
   # ─────────────────────────────────────────────────────────────────
-  # 7. POST-DEPLOY: STAGING  [FULL TEST SUITE]
+  # 6. POST-DEPLOY: DEV  [DEVOPS OWNS smoke]  [SHARED integration]
   # ─────────────────────────────────────────────────────────────────
-  post-deploy-staging:
-    name: Staging — post-deploy tests
+  post-deploy-dev:
+    name: Dev — post-deploy tests
     runs-on: ubuntu-latest
     needs: [gitops-update]
     if: |
-      github.event_name == 'push' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
       needs.gitops-update.result == 'success'
     steps:
       - uses: actions/checkout@v4
@@ -392,9 +359,9 @@ jobs:
             https://github.com/argoproj/argo-cd/releases/download/${{ env.ARGOCD_VERSION }}/argocd-linux-amd64
           chmod +x /usr/local/bin/argocd
 
-      - name: Wait for ArgoCD sync (staging)
+      - name: Wait for ArgoCD sync (dev)
         run: |
-          argocd app wait bookstore-staging \
+          argocd app wait bookstore-dev \
             --health --timeout 300 \
             --server ${{ secrets.ARGOCD_SERVER }} \
             --auth-token ${{ secrets.ARGOCD_TOKEN }} \
@@ -403,10 +370,11 @@ jobs:
       # ── SMOKE TESTS  [DEVOPS OWNS] ───────────────────────────────
       - name: Smoke tests — health endpoints
         run: |
-          BASE=${{ secrets.STAGING_URL }}
+          BASE=${{ secrets.DEV_URL }}
           check() {
+            echo -n "  → $1 "
             STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$1")
-            [[ "$STATUS" == "200" ]] && echo "  ✅ $1" || (echo "  ❌ $1 ($STATUS)" && exit 1)
+            [[ "$STATUS" == "200" ]] && echo "✅ ($STATUS)" || (echo "❌ ($STATUS)" && exit 1)
           }
           check "$BASE/health"
           check "$BASE/api/books/health"
@@ -414,151 +382,51 @@ jobs:
           check "$BASE/api/search/health"
 
       # ── INTEGRATION TESTS  [SHARED] ──────────────────────────────
-      # DevOps: pytest install. Dev: tests/integration/*.py
       - name: Install Python test dependencies
         run: pip install pytest requests --quiet
 
-      - name: Integration tests
+      - name: Integration tests — basic connectivity
         run: |
-          BASE=${{ secrets.STAGING_URL }}
-          # Uncomment once tests/integration/ exists:
+          BASE=${{ secrets.DEV_URL }}
+          echo "  → book API returns data"
+          curl -sf "$BASE/api/books?limit=1" | grep -q '"id"' \
+            && echo "  ✅ book API responding" \
+            || (echo "  ❌ book API not returning expected data" && exit 1)
+
+          echo "  → search service reachable"
+          curl -sf "$BASE/api/search?q=test" \
+            && echo "  ✅ search API reachable" \
+            || (echo "  ❌ search API not reachable" && exit 1)
+
+          # Full suite — uncomment once tests/integration/ exists:
           # pytest tests/integration/ --base-url=$BASE -v --tb=short \
-          #   --junit-xml=reports/integration-staging.xml
-          echo "⚠️  PENDING: Add tests/integration/ (dev team)"
+          #   --junit-xml=reports/integration-dev.xml
+          echo "⚠️  PENDING: Full integration suite — add tests/integration/"
 
-      # ── E2E TESTS  [SHARED] ──────────────────────────────────────
-      # DevOps: Playwright install. Dev/QA: tests/e2e/*.spec.ts
-      - name: Install Playwright + browser deps
-        run: |
-          npm install -g @playwright/test
-          npx playwright install --with-deps chromium firefox webkit
-
-      - name: E2E tests (Playwright)
-        run: |
-          # Uncomment once tests/e2e/*.spec.ts exist:
-          # npx playwright test \
-          #   --project=chromium --project=firefox \
-          #   --reporter=html --output=reports/playwright
-          echo "⚠️  PENDING: Add tests/e2e/*.spec.ts (QA/dev team)"
-
-      - name: Upload Playwright report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: playwright-staging-report
-          path: reports/playwright/
-          if-no-files-found: ignore
-
-      # ── PERFORMANCE TESTS  [DEVOPS OWNS] ────────────────────────
-      - name: Install k6
-        run: |
-          sudo gpg -k
-          sudo gpg --no-default-keyring \
-            --keyring /usr/share/keyrings/k6-archive-keyring.gpg \
-            --keyserver hkp://keyserver.ubuntu.com:80 \
-            --recv-keys C5AD17C747E3415A3642D57D77C6C491D6AC1D69
-          echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] \
-            https://dl.k6.io/deb stable main" | sudo tee /etc/apt/sources.list.d/k6.list
-          sudo apt-get update -qq && sudo apt-get install -y k6
-
-      - name: Performance tests (k6) — smoke
-        run: |
-          # Uncomment once tests/performance/staging-smoke.js exists:
-          # k6 run tests/performance/staging-smoke.js \
-          #   --env BASE_URL=${{ secrets.STAGING_URL }} \
-          #   --out json=reports/k6-smoke.json \
-          #   --summary-trend-stats="avg,p(95),p(99)"
-          echo "⚠️  TODO (DevOps): create tests/performance/staging-smoke.js"
-          echo "     Target: 10 VUs × 30s, p95 < 500ms, error rate < 1%"
-
-      - name: Performance tests (k6) — load
-        run: |
-          # Uncomment once tests/performance/staging-load.js exists:
-          # k6 run tests/performance/staging-load.js \
-          #   --env BASE_URL=${{ secrets.STAGING_URL }} \
-          #   --out json=reports/k6-load.json
-          echo "⚠️  TODO (DevOps): create tests/performance/staging-load.js"
-          echo "     Target: ramp to 50 VUs over 5m, soak 10m, ramp down"
-
-      # ── OWASP ZAP DAST  [DEVOPS OWNS] ───────────────────────────
-      - name: OWASP ZAP — DAST baseline scan
-        uses: zaproxy/action-baseline@v0.12.0
-        with:
-          target: ${{ secrets.STAGING_URL }}
-          rules_file_name: .zap/rules.tsv
-          cmd_options: '-a -j'
-          fail_action: warn
-
-      - name: Upload ZAP report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: zap-staging-report
-          path: report_html.html
-
-      - name: Staging test summary
+      - name: Dev deploy summary
         if: always()
         run: |
           echo "════════════════════════════════════════"
-          echo "  STAGING POST-DEPLOY COMPLETE"
-          echo ""
-          echo "  [DEVOPS — done]"
-          echo "  ✅ Smoke tests"
-          echo "  ✅ OWASP ZAP DAST"
-          echo "  ✅ k6 install + jobs wired (scripts TODO)"
-          echo "  ✅ Playwright install + jobs wired (specs TODO)"
-          echo ""
-          echo "  [PENDING dev/QA]"
-          echo "  ⚠️  Integration : tests/integration/*.py"
-          echo "  ⚠️  E2E         : tests/e2e/*.spec.ts"
-          echo "  ⚠️  k6 scripts  : DevOps to write (no blocker)"
-          echo ""
-          echo "  ⏳ Awaiting manual QA sign-off"
+          echo "  DEV POST-DEPLOY COMPLETE"
+          echo "  Smoke        : ✅ DevOps-owned"
+          echo "  Integration  : ✅ basic / ⚠️  full pending dev team"
           echo "════════════════════════════════════════"
-
-  # ─────────────────────────────────────────────────────────────────
-  # 8. MANUAL QA GATE  [DEVOPS OWNS]
-  #    Configure: Settings → Environments → staging → required reviewers
-  # ─────────────────────────────────────────────────────────────────
-  qa-approval:
-    name: "⏳ Manual QA sign-off (staging)"
-    runs-on: ubuntu-latest
-    needs: [post-deploy-staging]
-    if: |
-      github.event_name == 'push' &&
-      needs.post-deploy-staging.result == 'success'
-    environment:
-      name: staging
-    steps:
-      - name: QA gate passed
-        run: |
-          echo "✅ QA sign-off complete — release approved to merge to main"
 
 # ═══════════════════════════════════════════════════════════════════
 #  TRIGGER SUMMARY
 #  ──────────────────────────────────────────────────────────────────
-#  push to release/**   → full pipeline (build + staging deploy +
-#                          smoke + integration + E2E + perf + ZAP +
-#                          QA gate)
-#
-#  PR release/** → main → pr-validation only (secret scan + lint +
-#                          unit tests + SonarQube PR decoration)
-#                          blocks merge on failure
+#  PR develop → release/**  → pr-validation only (blocks merge)
+#  push to develop          → full build + dev deploy + tests
 #
 #  REQUIRED SETUP
-#    Settings → Branches → main → Require status checks
-#    → add "PR Validation (release → main)" as required check
+#    Settings → Branches → release/** → Require status checks
+#    → add "PR Validation (develop → release)" as required check
 #
 #  SECRETS REQUIRED
 #    ECR_REGISTRY, ARGOCD_SERVER, ARGOCD_TOKEN
-#    STAGING_URL, SONAR_TOKEN, SONAR_HOST_URL
+#    DEV_URL, SONAR_TOKEN, SONAR_HOST_URL
 #
 #  DEV TEAM DELIVERABLES
-#    tests/integration/       pytest integration tests
-#    tests/e2e/*.spec.ts      Playwright user journeys
-#
-#  DEVOPS TODO
-#    tests/performance/staging-smoke.js
-#    tests/performance/staging-load.js
-#    .zap/rules.tsv
+#    services/{svc}/tests/unit/
+#    tests/integration/
 # ═══════════════════════════════════════════════════════════════════

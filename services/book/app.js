@@ -51,7 +51,7 @@ const pool = new Pool({
   port: process.env.DB_PORT || 5432,
   database: process.env.DB_NAME || 'bookingdb',
   user: process.env.DB_USER || 'postgres',
-  password: process.env.DB_PASSWORD || 'postgres',
+  password: process.env.DB_PASSWORD,
   ssl: {
     rejectUnauthorized: false
   }
@@ -200,11 +200,5 @@ initDB()
   .then(() => app.listen(PORT, () =>
     console.log(`Booking service running on port ${PORT}`)))
   .catch(err => { console.error('DB init failed:', err); process.exit(1); }); 
- 
- 
- 
- 
- 
- 
  
  
