@@ -48,7 +48,8 @@ env:
 #
 #  WHEN push to develop:
 #    → secret scan → detect changes → sonarqube
-#    → build & push → gitops update (dev)
+#    → build & push (SHA tag only — ECR immutable tag compliant)
+#    → gitops update (dev)
 #    → post-deploy dev (smoke + integration tests)
 #
 #  OWNERSHIP
@@ -103,7 +104,6 @@ jobs:
           cd services/frontend && npm run test:unit 2>/dev/null \
             || echo "⚠️  PENDING: frontend has no unit tests — add test:unit script"
 
-      # SonarQube PR decoration — posts inline comments on the PR
       - name: SonarQube SAST (PR decoration)
         uses: sonarsource/sonarqube-scan-action@master
         env:
@@ -121,7 +121,6 @@ jobs:
 
   # ─────────────────────────────────────────────────────────────────
   # 0. COMPUTE TAGS  [DEVOPS OWNS]
-  #    Runs ONLY on push. tag=dev-{sha}, deploy_env=dev
   # ─────────────────────────────────────────────────────────────────
   compute-tags:
     name: Compute image tag
@@ -209,7 +208,9 @@ jobs:
 
   # ─────────────────────────────────────────────────────────────────
   # 4. BUILD & PUSH  [DEVOPS OWNS]
-  #    Trivy exit-code=0 on dev (warn only).
+  #    SHA-only tag — no floating latest-dev tag
+  #    ECR immutable tags fully supported
+  #    Trivy exit-code=0 on dev (warn only)
   # ─────────────────────────────────────────────────────────────────
   build:
     name: Build & Push — ${{ matrix.service }}
@@ -242,19 +243,16 @@ jobs:
             CHANGED="false"
           fi
 
-          # fallback if empty
           if [ -z "$CHANGED" ]; then
             CHANGED="false"
           fi
 
-          # manual trigger override
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             CHANGED="true"
           fi
 
           echo "SERVICE=$SERVICE"
           echo "CHANGED=$CHANGED"
-
           echo "changed=$CHANGED" >> $GITHUB_OUTPUT
 
       - name: Configure AWS (OIDC)
@@ -276,10 +274,8 @@ jobs:
             --label "git.sha=$GITHUB_SHA" \
             --label "git.branch=develop" \
             -t $ECR_REGISTRY/${{ matrix.service }}:${TAG} \
-            -t $ECR_REGISTRY/${{ matrix.service }}:latest-dev \
             ./services/${{ matrix.service }}
           docker push $ECR_REGISTRY/${{ matrix.service }}:${TAG}
-          docker push $ECR_REGISTRY/${{ matrix.service }}:latest-dev
 
       - name: Trivy — table output (debug)
         if: steps.check.outputs.changed == 'true'
@@ -390,7 +386,6 @@ jobs:
             --auth-token ${{ secrets.ARGOCD_TOKEN }} \
             --insecure
 
-      # ── SMOKE TESTS  [DEVOPS OWNS] ───────────────────────────────
       - name: Smoke tests — health endpoints
         run: |
           BASE=${{ secrets.DEV_URL }}
@@ -404,7 +399,6 @@ jobs:
           check "$BASE/api/users/health"
           check "$BASE/api/search/health"
 
-      # ── INTEGRATION TESTS  [SHARED] ──────────────────────────────
       - name: Install Python test dependencies
         run: pip install pytest requests --quiet
 
@@ -422,8 +416,7 @@ jobs:
             || (echo "  ❌ search API not reachable" && exit 1)
 
           # Full suite — uncomment once tests/integration/ exists:
-          # pytest tests/integration/ --base-url=$BASE -v --tb=short \
-          #   --junit-xml=reports/integration-dev.xml
+          # pytest tests/integration/ --base-url=$BASE -v --tb=short
           echo "⚠️  PENDING: Full integration suite — add tests/integration/"
 
       - name: Dev deploy summary
@@ -441,15 +434,7 @@ jobs:
 #  PR develop → release/**  → pr-validation only (blocks merge)
 #  push to develop          → full build + dev deploy + tests
 #
-#  REQUIRED SETUP
-#    Settings → Branches → release/** → Require status checks
-#    → add "PR Validation (develop → release)" as required check
-#
 #  SECRETS REQUIRED
 #    ECR_REGISTRY, ARGOCD_SERVER, ARGOCD_TOKEN
 #    DEV_URL, SONAR_TOKEN, SONAR_HOST_URL
-#
-#  DEV TEAM DELIVERABLES
-#    services/{svc}/tests/unit/
-#    tests/integration/
 # ═══════════════════════════════════════════════════════════════════
