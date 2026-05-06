@@ -8,7 +8,7 @@ frontend:
 book:
   replicas: 1
   maxReplicas: 4
-  tag: "dev-7a437481"
+  tag: "dev-d324e244"
 search:
   replicas: 1
   maxReplicas: 4
@@ -16,7 +16,14 @@ search:
 user:
   replicas: 1
   maxReplicas: 4
-  tag: "dev-bbed7bda"
+  tag: "dev-d324e244"
 postgres:
   host: dev-microservices-postgres.cg9mq6cuoriv.us-east-1.rds.amazonaws.com
   user: bookinguser
+
+ingress:
+  enabled: true
+  className: alb
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
