@@ -1,4 +1,4 @@
-name: Feature + PR CI
+name: Feature Branch + PR CI
 
 on:
   push:
@@ -10,35 +10,45 @@ on:
 
   pull_request:
     branches:
-      - develop
+      - develop          # PR from feature/** → develop
     paths:
       - 'services/**'
       - 'gitops/**'
 
 permissions:
   id-token: write
-  contents: write
+  contents: read
   security-events: write
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: feature-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  AWS_REGION: us-east-1
-  ECR_REGISTRY: ${{ secrets.ECR_REGISTRY }}
-  ARGOCD_VERSION: v2.11.3
+# ═══════════════════════════════════════════════════════════════════
+#  FEATURE BRANCH + PR PIPELINE
+#  ──────────────────────────────────────────────────────────────────
+#  WHEN push to feature/**:
+#    → feature-checks (secret scan + lint + unit + SAST branch scan)
+#    → pr-validation SKIPPED
+#
+#  WHEN pull_request feature/** → develop:
+#    → pr-validation (secret scan + lint + unit + SAST PR decoration)
+#    → feature-checks SKIPPED
+#    → blocks merge on failure
+#
+#  No build. No deploy. Fast feedback only.
+# ═══════════════════════════════════════════════════════════════════
 
 jobs:
 
   # ─────────────────────────────────────────────────────────────────
-  # PR VALIDATION (UNCHANGED FROM YOUR PIPELINE)
+  # 1. PR VALIDATION — feature/** → develop
+  #    Runs ONLY on pull_request. Blocks merge on failure.
   # ─────────────────────────────────────────────────────────────────
   pr-validation:
-    name: PR Validation
+    name: PR Validation (feature → develop)
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
-
     steps:
       - uses: actions/checkout@v4
         with:
@@ -56,6 +66,7 @@ jobs:
         run: |
           for svc in book frontend search user; do
             [ -f services/$svc/Dockerfile ] || continue
+            echo "==> Linting services/$svc/Dockerfile"
             docker run --rm -i hadolint/hadolint \
               hadolint --failure-threshold warning - \
               < services/$svc/Dockerfile
@@ -64,25 +75,18 @@ jobs:
       - name: Unit tests
         run: |
           set -e
-          echo "==> book unit tests"
-          cd services/book && pytest tests/unit/ -v --tb=short 2>/dev/null \
-            || echo "⚠️  PENDING: No unit tests found for book"
-          cd $GITHUB_WORKSPACE
-
-          echo "==> user unit tests"
-          cd services/user && pytest tests/unit/ -v --tb=short 2>/dev/null \
-            || echo "⚠️  PENDING: No unit tests found for user"
-          cd $GITHUB_WORKSPACE
-
-          echo "==> search unit tests"
-          cd services/search && pytest tests/unit/ -v --tb=short 2>/dev/null \
-            || echo "⚠️  PENDING: No unit tests found for search"
-          cd $GITHUB_WORKSPACE
-
+          for svc in book user search; do
+            echo "==> $svc unit tests"
+            cd services/$svc
+            pytest tests/unit/ -v --tb=short 2>/dev/null \
+              || echo "⚠️  PENDING: $svc has no unit tests — add services/$svc/tests/unit/"
+            cd $GITHUB_WORKSPACE
+          done
           echo "==> frontend unit tests"
           cd services/frontend && npm run test:unit 2>/dev/null \
-            || echo "⚠️  PENDING: No unit tests found for frontend"
+            || echo "⚠️  PENDING: frontend has no unit tests — add test:unit script"
 
+      # SonarQube in PR decoration mode — posts inline comments on the PR
       - name: SonarQube SAST (PR decoration)
         uses: sonarsource/sonarqube-scan-action@master
         env:
@@ -99,14 +103,13 @@ jobs:
             -Dsonar.pullrequest.base=${{ github.base_ref }}
 
   # ─────────────────────────────────────────────────────────────────
-  # FEATURE CHECKS (UNCHANGED FROM YOUR PIPELINE)
+  # 2. FEATURE PUSH CHECKS — push to feature/**
+  #    Runs ONLY on push. Fast feedback while coding before PR.
   # ─────────────────────────────────────────────────────────────────
   feature-checks:
     name: Feature — lint + secrets + unit + SAST
-    if: github.event_name == 'push' &&
-        startsWith(github.ref, 'refs/heads/feature/')
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
-
     steps:
       - uses: actions/checkout@v4
         with:
@@ -124,6 +127,7 @@ jobs:
         run: |
           for svc in book frontend search user; do
             [ -f services/$svc/Dockerfile ] || continue
+            echo "==> Linting services/$svc/Dockerfile"
             docker run --rm -i hadolint/hadolint \
               hadolint --failure-threshold warning - \
               < services/$svc/Dockerfile
@@ -133,16 +137,18 @@ jobs:
         run: |
           set -e
           for svc in book user search; do
+            echo "==> $svc unit tests"
             cd services/$svc
             pytest tests/unit/ -v --tb=short 2>/dev/null \
-              || echo "⚠️  PENDING: $svc has no unit tests yet"
+              || echo "⚠️  PENDING: $svc has no unit tests — add services/$svc/tests/unit/"
             cd $GITHUB_WORKSPACE
           done
-
+          echo "==> frontend unit tests"
           cd services/frontend && npm run test:unit 2>/dev/null \
-            || echo "⚠️  PENDING: frontend has no unit tests yet"
+            || echo "⚠️  PENDING: frontend has no unit tests — add test:unit script"
 
-      - name: SonarQube SAST (feature branch scan)
+      # SonarQube in branch scan mode — pushes results to SonarQube branch view
+      - name: SonarQube SAST (branch scan)
         uses: sonarsource/sonarqube-scan-action@master
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
@@ -154,3 +160,16 @@ jobs:
             -Dsonar.sources=services
             -Dsonar.exclusions=**/node_modules/**,**/*.test.*,**/vendor/**
             -Dsonar.branch.name=${{ github.ref_name }}
+
+# ═══════════════════════════════════════════════════════════════════
+#  REQUIRED SETUP
+#    Settings → Branches → develop → Require status checks
+#    → add "PR Validation (feature → develop)" as required check
+#
+#  SECRETS REQUIRED
+#    SONAR_TOKEN, SONAR_HOST_URL
+#
+#  DEV TEAM DELIVERABLES
+#    services/{svc}/tests/unit/
+#    services/frontend  →  npm run test:unit
+# ═══════════════════════════════════════════════════════════════════
