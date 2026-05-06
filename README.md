@@ -411,8 +411,7 @@ Configure these in **GitHub → Settings → Secrets and variables → Actions**
 | `SONAR_TOKEN` | SonarCloud authentication token |
 | `SONAR_HOST_URL` | SonarCloud host (https://sonarcloud.io) |
 
-AWS authentication uses **OIDC** (no static credentials). IAM role: `arn:aws:iam::635457411372:role/github-actions-ecr-role`
-
+AWS authentication uses **OIDC** (no static credentials)
 ---
 
 ## Tech Stack
