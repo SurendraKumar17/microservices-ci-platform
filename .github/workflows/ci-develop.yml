@@ -226,13 +226,36 @@ jobs:
       - name: Check if service changed
         id: check
         run: |
-          case "${{ matrix.service }}" in
-            book)     echo "changed=${{ needs.detect-changes.outputs.book }}"     >> $GITHUB_OUTPUT ;;
-            frontend) echo "changed=${{ needs.detect-changes.outputs.frontend }}" >> $GITHUB_OUTPUT ;;
-            search)   echo "changed=${{ needs.detect-changes.outputs.search }}"   >> $GITHUB_OUTPUT ;;
-            user)     echo "changed=${{ needs.detect-changes.outputs.user }}"     >> $GITHUB_OUTPUT ;;
-          esac
-          [[ "${{ github.event_name }}" == "workflow_dispatch" ]] && echo "changed=true" >> $GITHUB_OUTPUT
+          set -eo pipefail
+
+          SERVICE="${{ matrix.service }}"
+
+          if [ "$SERVICE" == "book" ]; then
+            CHANGED="${{ needs.detect-changes.outputs.book }}"
+          elif [ "$SERVICE" = "frontend" ]; then
+            CHANGED="${{ needs.detect-changes.outputs.frontend }}"
+          elif [ "$SERVICE" = "search" ]; then
+            CHANGED="${{ needs.detect-changes.outputs.search }}"
+          elif [ "$SERVICE" = "user" ]; then
+            CHANGED="${{ needs.detect-changes.outputs.user }}"
+          else
+            CHANGED="false"
+          fi
+
+          # fallback if empty
+          if [ -z "$CHANGED" ]; then
+            CHANGED="false"
+          fi
+
+          # manual trigger override
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            CHANGED="true"
+          fi
+
+          echo "SERVICE=$SERVICE"
+          echo "CHANGED=$CHANGED"
+
+          echo "changed=$CHANGED" >> $GITHUB_OUTPUT
 
       - name: Configure AWS (OIDC)
         if: steps.check.outputs.changed == 'true'
