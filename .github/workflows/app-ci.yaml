@@ -1,29 +1,20 @@
-name: Production GitOps CI
+name: Release Branch CI
 
 on:
   push:
     branches:
-      - develop
-      - main
-      - 'feature/**'
       - 'release/**'
-      - 'hotfix/**'
-    paths:
-      - 'services/**'
-      - 'gitops/**'
-  pull_request:
-    branches: [main, develop, 'release/**']
     paths:
       - 'services/**'
       - 'gitops/**'
   workflow_dispatch:
     inputs:
       environment:
-        description: 'Environment to deploy'
+        description: 'Force deploy to staging'
         required: true
-        default: 'dev'
+        default: 'staging'
         type: choice
-        options: [dev, staging, prod]
+        options: [staging]
 
 permissions:
   id-token: write
@@ -31,8 +22,8 @@ permissions:
   security-events: write
 
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  group: release-${{ github.ref }}
+  cancel-in-progress: false  # never cancel an active staging deploy
 
 env:
   AWS_REGION: us-east-1
@@ -40,41 +31,33 @@ env:
   ARGOCD_VERSION: v2.11.3
 
 # ═══════════════════════════════════════════════════════════════════
-#  OWNERSHIP MAP
+#  RELEASE BRANCH PIPELINE
 #  ──────────────────────────────────────────────────────────────────
-#  [DEVOPS OWNS]  = DevOps writes, maintains, and runs these
-#  [DEV OWNS]     = Developers write the test files/scripts;
-#                   DevOps wires the CI job and installs tooling
-#  [SHARED]       = DevOps owns the job; Dev owns the test scripts
+#  Runs on every push to release/** branches.
+#  Full scan → build → deploy to staging → full test suite → QA gate.
 #
-#  PIPELINE FLOW PER BRANCH
-#  ──────────────────────────────────────────────────────────────────
-#  feature/**  → secret scan + lint + unit + SAST         (no deploy)
-#  hotfix/**   → secret scan + lint only                  (fast path)
-#  PR          → same as feature + blocks merge
-#  develop     → full scan → build → dev deploy
-#                → smoke + integration tests
-#  release/**  → full scan → build → staging deploy
-#                → smoke + integration + E2E + perf + ZAP
-#                → manual QA gate
-#  main        → full scan → approval gate → prod deploy
-#                → smoke + synthetic monitoring
+#  FLOW:
+#    secret-scan ──┐
+#    detect-changes─┤
+#                   ├──► build & push ──► trivy-iac ──► gitops-update
+#    sonarqube ─────┘         │
+#                             └──► post-deploy-staging (smoke + integration
+#                                  + E2E + performance + ZAP)
+#                                       └──► qa-approval gate
+#
+#  OWNERSHIP
+#  [DEVOPS OWNS]  All job wiring, k6 scripts, ZAP, ArgoCD sync
+#  [DEV OWNS]     tests/integration/*.py, tests/e2e/*.spec.ts
 # ═══════════════════════════════════════════════════════════════════
 
 jobs:
 
   # ─────────────────────────────────────────────────────────────────
   # 0. COMPUTE TAGS  [DEVOPS OWNS]
-  #    Single source of truth for image TAG and deploy ENV.
-  #    All downstream jobs consume these outputs — never recompute.
+  #    tag=staging-{sha}, deploy_env=staging
   # ─────────────────────────────────────────────────────────────────
   compute-tags:
-    name: Compute image tag + environment
-    if: |
-      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
-      (github.ref == 'refs/heads/develop' ||
-       github.ref == 'refs/heads/main'    ||
-       startsWith(github.ref, 'refs/heads/release/'))
+    name: Compute image tag
     runs-on: ubuntu-latest
     outputs:
       tag:        ${{ steps.set.outputs.tag }}
@@ -83,197 +66,21 @@ jobs:
       - id: set
         run: |
           SHA=$(echo $GITHUB_SHA | cut -c1-8)
-          REF="${GITHUB_REF}"
-          if [[ "$REF" == "refs/heads/main" ]]; then
-            echo "tag=prod-${SHA}"      >> $GITHUB_OUTPUT
-            echo "deploy_env=prod"      >> $GITHUB_OUTPUT
-          elif [[ "$REF" == refs/heads/release/* ]]; then
-            echo "tag=staging-${SHA}"   >> $GITHUB_OUTPUT
-            echo "deploy_env=staging"   >> $GITHUB_OUTPUT
-          else
-            echo "tag=dev-${SHA}"       >> $GITHUB_OUTPUT
-            echo "deploy_env=dev"       >> $GITHUB_OUTPUT
-          fi
+          echo "tag=staging-${SHA}"  >> $GITHUB_OUTPUT
+          echo "deploy_env=staging"  >> $GITHUB_OUTPUT
 
   # ─────────────────────────────────────────────────────────────────
-  # 1. PR VALIDATION  [DEVOPS OWNS job wiring]  [DEV OWNS test files]
-  #    Blocks merge if any step fails.
+  # 1. SECRET SCAN  [DEVOPS OWNS]
   # ─────────────────────────────────────────────────────────────────
-  pr-validation:
-    name: PR Validation
-    if: github.event_name == 'pull_request'
+  secret-scan:
+    name: Secret Scan (TruffleHog)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # [DEVOPS OWNS] — TruffleHog config and secret pattern tuning
-      - name: Secret scan (TruffleHog)
-        uses: trufflesecurity/trufflehog@main
-        with:
-          path: ./
-          base: ${{ github.event.pull_request.base.sha }}
-          head: ${{ github.event.pull_request.head.sha }}
-          extra_args: --only-verified
-
-      # [DEVOPS OWNS] — Hadolint thresholds and runner setup
-      - name: Lint Dockerfiles (Hadolint)
-        run: |
-          for svc in book frontend search user; do
-            [ -f services/$svc/Dockerfile ] || continue
-            echo "==> Linting services/$svc/Dockerfile"
-            docker run --rm -i hadolint/hadolint \
-              hadolint --failure-threshold warning - \
-              < services/$svc/Dockerfile
-          done
-
-      # [DEV OWNS test files] — DevOps owns this job wrapper.
-      # Devs must provide: services/{svc}/tests/unit/
-      # Command is real — will fail loudly once test files exist.
-      - name: Unit tests
-        run: |
-          set -e
-          echo "==> book unit tests"
-          cd services/book && pytest tests/unit/ -v --tb=short 2>/dev/null \
-            || echo "⚠️  PENDING: No unit tests found for book — add tests/unit/"
-          cd $GITHUB_WORKSPACE
-
-          echo "==> user unit tests"
-          cd services/user && pytest tests/unit/ -v --tb=short 2>/dev/null \
-            || echo "⚠️  PENDING: No unit tests found for user — add tests/unit/"
-          cd $GITHUB_WORKSPACE
-
-          echo "==> search unit tests"
-          cd services/search && pytest tests/unit/ -v --tb=short 2>/dev/null \
-            || echo "⚠️  PENDING: No unit tests found for search — add tests/unit/"
-          cd $GITHUB_WORKSPACE
-
-          echo "==> frontend unit tests"
-          cd services/frontend && npm run test:unit 2>/dev/null \
-            || echo "⚠️  PENDING: No unit tests found for frontend — add test:unit script"
-
-      # [DEVOPS OWNS] — SonarQube project config, exclusions, quality gate thresholds
-      - name: SonarQube SAST (PR decoration)
-        uses: sonarsource/sonarqube-scan-action@master
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
-        with:
-          args: >
-            -Dsonar.projectKey=Surendra_Pandrinki_microservices-gitops-platform
-            -Dsonar.organization=surendrakumar17
-            -Dsonar.sources=services
-            -Dsonar.exclusions=**/node_modules/**,**/*.test.*,**/vendor/**
-            -Dsonar.pullrequest.key=${{ github.event.pull_request.number }}
-            -Dsonar.pullrequest.branch=${{ github.head_ref }}
-            -Dsonar.pullrequest.base=${{ github.base_ref }}
-
-  # ─────────────────────────────────────────────────────────────────
-  # 1b. FEATURE BRANCH PUSH  [DEVOPS OWNS job]  [DEV OWNS tests]
-  # ─────────────────────────────────────────────────────────────────
-  feature-checks:
-    name: Feature — lint + secrets + unit + SAST
-    if: |
-      github.event_name == 'push' &&
-      startsWith(github.ref, 'refs/heads/feature/')
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Secret scan (TruffleHog)
-        uses: trufflesecurity/trufflehog@main
-        with:
-          path: ./
-          base: ${{ github.event.before }}
-          head: ${{ github.event.after }}
-          extra_args: --only-verified
-
-      - name: Lint Dockerfiles (Hadolint)
-        run: |
-          for svc in book frontend search user; do
-            [ -f services/$svc/Dockerfile ] || continue
-            docker run --rm -i hadolint/hadolint \
-              hadolint --failure-threshold warning - \
-              < services/$svc/Dockerfile
-          done
-
-      - name: Unit tests
-        run: |
-          set -e
-          for svc in book user search; do
-            cd services/$svc
-            pytest tests/unit/ -v --tb=short 2>/dev/null \
-              || echo "⚠️  PENDING: $svc has no unit tests yet"
-            cd $GITHUB_WORKSPACE
-          done
-          cd services/frontend && npm run test:unit 2>/dev/null \
-            || echo "⚠️  PENDING: frontend has no unit tests yet"
-
-      - name: SonarQube SAST (feature branch scan)
-        uses: sonarsource/sonarqube-scan-action@master
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
-        with:
-          args: >
-            -Dsonar.projectKey=Surendra_Pandrinki_microservices-gitops-platform
-            -Dsonar.organization=surendrakumar17
-            -Dsonar.sources=services
-            -Dsonar.exclusions=**/node_modules/**,**/*.test.*,**/vendor/**
-            -Dsonar.branch.name=${{ github.ref_name }}
-
-  # ─────────────────────────────────────────────────────────────────
-  # 1c. HOTFIX BRANCH  [DEVOPS OWNS] — fast path, no deploy
-  # ─────────────────────────────────────────────────────────────────
-  hotfix-checks:
-    name: Hotfix — fast lint + secrets
-    if: |
-      github.event_name == 'push' &&
-      startsWith(github.ref, 'refs/heads/hotfix/')
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Secret scan (TruffleHog)
-        uses: trufflesecurity/trufflehog@main
-        with:
-          path: ./
-          base: ${{ github.event.before }}
-          head: ${{ github.event.after }}
-          extra_args: --only-verified
-
-      - name: Lint Dockerfiles (Hadolint)
-        run: |
-          for svc in book frontend search user; do
-            [ -f services/$svc/Dockerfile ] || continue
-            docker run --rm -i hadolint/hadolint \
-              hadolint --failure-threshold warning - \
-              < services/$svc/Dockerfile
-          done
-
-  # ─────────────────────────────────────────────────────────────────
-  # 2. SECRET SCAN — protected branches  [DEVOPS OWNS]
-  #    Catches secrets on squash-merges that bypass PR checks.
-  # ─────────────────────────────────────────────────────────────────
-  secret-scan-protected:
-    name: Secret scan — protected branch push
-    if: |
-      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
-      (github.ref == 'refs/heads/develop' ||
-       github.ref == 'refs/heads/main'    ||
-       startsWith(github.ref, 'refs/heads/release/'))
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Secret scan (TruffleHog)
+      - name: Secret scan
         uses: trufflesecurity/trufflehog@main
         with:
           path: ./
@@ -282,15 +89,10 @@ jobs:
           extra_args: --only-verified
 
   # ─────────────────────────────────────────────────────────────────
-  # 3. DETECT CHANGES  [DEVOPS OWNS]
+  # 2. DETECT CHANGES  [DEVOPS OWNS]
   # ─────────────────────────────────────────────────────────────────
   detect-changes:
     name: Detect Changed Services
-    if: |
-      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
-      (github.ref == 'refs/heads/develop' ||
-       github.ref == 'refs/heads/main'    ||
-       startsWith(github.ref, 'refs/heads/release/'))
     runs-on: ubuntu-latest
     outputs:
       book:     ${{ steps.filter.outputs.book }}
@@ -310,117 +112,12 @@ jobs:
             user:     ['services/user/**']
 
   # ─────────────────────────────────────────────────────────────────
-  # 4. BUILD & PUSH  [DEVOPS OWNS] — image build, ECR push, Trivy scan
-  # ─────────────────────────────────────────────────────────────────
-  build:
-    name: Build & Push — ${{ matrix.service }}
-    if: |
-      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
-      (github.ref == 'refs/heads/develop' ||
-       github.ref == 'refs/heads/main'    ||
-       startsWith(github.ref, 'refs/heads/release/'))
-    runs-on: ubuntu-latest
-    needs: [detect-changes, compute-tags, secret-scan-protected]
-    strategy:
-      fail-fast: false
-      matrix:
-        service: [book, frontend, search, user]
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Check if service changed
-        id: check
-        run: |
-          case "${{ matrix.service }}" in
-            book)     echo "changed=${{ needs.detect-changes.outputs.book }}"     >> $GITHUB_OUTPUT ;;
-            frontend) echo "changed=${{ needs.detect-changes.outputs.frontend }}" >> $GITHUB_OUTPUT ;;
-            search)   echo "changed=${{ needs.detect-changes.outputs.search }}"   >> $GITHUB_OUTPUT ;;
-            user)     echo "changed=${{ needs.detect-changes.outputs.user }}"     >> $GITHUB_OUTPUT ;;
-          esac
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            echo "changed=true" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Set image tag from compute-tags
-        if: steps.check.outputs.changed == 'true'
-        run: |
-          echo "TAG=${{ needs.compute-tags.outputs.tag }}"               >> $GITHUB_ENV
-          echo "DEPLOY_ENV=${{ needs.compute-tags.outputs.deploy_env }}" >> $GITHUB_ENV
-
-      - name: Set Trivy exit code
-        if: steps.check.outputs.changed == 'true'
-        run: |
-          if [[ "$GITHUB_REF" == "refs/heads/main" ]]; then
-            echo "TRIVY_EXIT_CODE=1" >> $GITHUB_ENV
-          else
-            echo "TRIVY_EXIT_CODE=0" >> $GITHUB_ENV
-          fi
-
-      - name: Configure AWS (OIDC)
-        if: steps.check.outputs.changed == 'true'
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: arn:aws:iam::635457411372:role/github-actions-ecr-role
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Login to ECR
-        if: steps.check.outputs.changed == 'true'
-        uses: aws-actions/amazon-ecr-login@v2
-
-      - name: Build & Push image
-        if: steps.check.outputs.changed == 'true'
-        run: |
-          docker build \
-            --label "git.sha=$GITHUB_SHA" \
-            --label "git.branch=${GITHUB_REF##*/}" \
-            -t $ECR_REGISTRY/${{ matrix.service }}:$TAG \
-            -t $ECR_REGISTRY/${{ matrix.service }}:latest-$DEPLOY_ENV \
-            ./services/${{ matrix.service }}
-          docker push $ECR_REGISTRY/${{ matrix.service }}:$TAG
-          docker push $ECR_REGISTRY/${{ matrix.service }}:latest-$DEPLOY_ENV
-
-      # [DEVOPS OWNS] — Trivy config, severity thresholds, SARIF upload
-      - name: Trivy — debug table output
-        if: steps.check.outputs.changed == 'true'
-        uses: aquasecurity/trivy-action@master
-        with:
-          image-ref: ${{ env.ECR_REGISTRY }}/${{ matrix.service }}:${{ env.TAG }}
-          format: table
-          exit-code: '0'
-          severity: CRITICAL,HIGH
-          scanners: vuln,secret
-
-      - name: Trivy — image vulnerability scan
-        if: steps.check.outputs.changed == 'true'
-        uses: aquasecurity/trivy-action@master
-        with:
-          image-ref: ${{ env.ECR_REGISTRY }}/${{ matrix.service }}:${{ env.TAG }}
-          format: sarif
-          output: trivy-image-${{ matrix.service }}.sarif
-          severity: CRITICAL,HIGH
-          exit-code: ${{ env.TRIVY_EXIT_CODE }}
-          ignore-unfixed: true
-
-      - name: Upload Trivy image SARIF
-        if: steps.check.outputs.changed == 'true'
-        uses: github/codeql-action/upload-sarif@v3
-        with:
-          sarif_file: trivy-image-${{ matrix.service }}.sarif
-          category: trivy-image-${{ matrix.service }}-${{ github.sha }}
-
-  # ─────────────────────────────────────────────────────────────────
-  # 5. SONARQUBE SAST  [DEVOPS OWNS] — project config and thresholds
+  # 3. SONARQUBE SAST  [DEVOPS OWNS]
   # ─────────────────────────────────────────────────────────────────
   sonarqube:
-    name: SonarQube SAST (branch scan)
+    name: SonarQube SAST
     runs-on: ubuntu-latest
-    needs: [detect-changes, secret-scan-protected]
-    if: |
-      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
-      (github.ref == 'refs/heads/develop' ||
-       github.ref == 'refs/heads/main'    ||
-       startsWith(github.ref, 'refs/heads/release/'))
+    needs: [secret-scan]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -437,30 +134,98 @@ jobs:
             -Dsonar.organization=surendrakumar17
             -Dsonar.sources=services
             -Dsonar.exclusions=**/node_modules/**,**/*.test.*,**/vendor/**
+            -Dsonar.branch.name=${{ github.ref_name }}
 
   # ─────────────────────────────────────────────────────────────────
-  # 6. TRIVY IaC SCAN  [DEVOPS OWNS] — gitops/ Helm + Terraform
+  # 4. BUILD & PUSH  [DEVOPS OWNS]
+  #    Trivy exit-code=0 on staging (warn only; prod is blocking).
+  # ─────────────────────────────────────────────────────────────────
+  build:
+    name: Build & Push — ${{ matrix.service }}
+    runs-on: ubuntu-latest
+    needs: [detect-changes, compute-tags, secret-scan]
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [book, frontend, search, user]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check if service changed
+        id: check
+        run: |
+          case "${{ matrix.service }}" in
+            book)     echo "changed=${{ needs.detect-changes.outputs.book }}"     >> $GITHUB_OUTPUT ;;
+            frontend) echo "changed=${{ needs.detect-changes.outputs.frontend }}" >> $GITHUB_OUTPUT ;;
+            search)   echo "changed=${{ needs.detect-changes.outputs.search }}"   >> $GITHUB_OUTPUT ;;
+            user)     echo "changed=${{ needs.detect-changes.outputs.user }}"     >> $GITHUB_OUTPUT ;;
+          esac
+          [[ "${{ github.event_name }}" == "workflow_dispatch" ]] && echo "changed=true" >> $GITHUB_OUTPUT
+
+      - name: Configure AWS (OIDC)
+        if: steps.check.outputs.changed == 'true'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::635457411372:role/github-actions-ecr-role
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to ECR
+        if: steps.check.outputs.changed == 'true'
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build & Push image
+        if: steps.check.outputs.changed == 'true'
+        run: |
+          TAG=${{ needs.compute-tags.outputs.tag }}
+          docker build \
+            --label "git.sha=$GITHUB_SHA" \
+            --label "git.branch=${GITHUB_REF##*/}" \
+            -t $ECR_REGISTRY/${{ matrix.service }}:${TAG} \
+            -t $ECR_REGISTRY/${{ matrix.service }}:latest-staging \
+            ./services/${{ matrix.service }}
+          docker push $ECR_REGISTRY/${{ matrix.service }}:${TAG}
+          docker push $ECR_REGISTRY/${{ matrix.service }}:latest-staging
+
+      - name: Trivy — table output (debug)
+        if: steps.check.outputs.changed == 'true'
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.ECR_REGISTRY }}/${{ matrix.service }}:${{ needs.compute-tags.outputs.tag }}
+          format: table
+          exit-code: '0'
+          severity: CRITICAL,HIGH
+          scanners: vuln,secret
+
+      - name: Trivy — SARIF (warn only on staging)
+        if: steps.check.outputs.changed == 'true'
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.ECR_REGISTRY }}/${{ matrix.service }}:${{ needs.compute-tags.outputs.tag }}
+          format: sarif
+          output: trivy-image-${{ matrix.service }}.sarif
+          severity: CRITICAL,HIGH
+          exit-code: '0'
+          ignore-unfixed: true
+
+      - name: Upload Trivy SARIF
+        if: steps.check.outputs.changed == 'true'
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-image-${{ matrix.service }}.sarif
+          category: trivy-image-${{ matrix.service }}-${{ github.sha }}
+
+  # ─────────────────────────────────────────────────────────────────
+  # 5. TRIVY IaC SCAN  [DEVOPS OWNS]
+  #    Scans gitops/ Helm + Terraform configs. Warn only on staging.
   # ─────────────────────────────────────────────────────────────────
   trivy-iac:
     name: Trivy — IaC / Helm / Terraform scan
     runs-on: ubuntu-latest
-    needs: [detect-changes, secret-scan-protected]
-    if: |
-      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
-      (github.ref == 'refs/heads/main' ||
-       startsWith(github.ref, 'refs/heads/release/'))
+    needs: [secret-scan]
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set Trivy IaC exit code
-        run: |
-          if [[ "$GITHUB_REF" == "refs/heads/main" ]]; then
-            echo "TRIVY_EXIT_CODE=1" >> $GITHUB_ENV
-          else
-            echo "TRIVY_EXIT_CODE=0" >> $GITHUB_ENV
-          fi
-
-      - name: Trivy — IaC config scan
+      - name: Trivy — IaC config scan (warn on staging)
         uses: aquasecurity/trivy-action@master
         with:
           scan-type: config
@@ -468,7 +233,7 @@ jobs:
           format: sarif
           output: trivy-iac.sarif
           severity: CRITICAL,HIGH,MEDIUM
-          exit-code: ${{ env.TRIVY_EXIT_CODE }}
+          exit-code: '0'       # warn only; main pipeline blocks on this
 
       - name: Upload IaC SARIF
         uses: github/codeql-action/upload-sarif@v3
@@ -477,37 +242,13 @@ jobs:
           category: trivy-iac
 
   # ─────────────────────────────────────────────────────────────────
-  # 7. PROD APPROVAL GATE  [DEVOPS OWNS] — environment protection rules
-  #    Configure: Settings → Environments → production → reviewers
-  # ─────────────────────────────────────────────────────────────────
-  prod-approval:
-    name: "🔒 Production approval gate"
-    runs-on: ubuntu-latest
-    needs: [build, sonarqube, trivy-iac]
-    if: |
-      github.ref == 'refs/heads/main' &&
-      !contains(needs.*.result, 'failure') &&
-      !contains(needs.*.result, 'cancelled')
-    environment:
-      name: production
-    steps:
-      - name: Approval confirmed
-        run: |
-          echo "✅ Production deployment approved"
-          echo "   ArgoCD will sync → canary / blue-green rollout"
-
-  # ─────────────────────────────────────────────────────────────────
-  # 8. GITOPS UPDATE  [DEVOPS OWNS] — values.yaml commit → ArgoCD sync
+  # 6. GITOPS UPDATE  [DEVOPS OWNS]
   # ─────────────────────────────────────────────────────────────────
   gitops-update:
-    name: GitOps — update image tags
+    name: GitOps — update staging image tags
     runs-on: ubuntu-latest
-    needs: [build, detect-changes, sonarqube, compute-tags]
+    needs: [build, detect-changes, sonarqube, trivy-iac, compute-tags]
     if: |
-      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
-      (github.ref == 'refs/heads/develop' ||
-       github.ref == 'refs/heads/main'    ||
-       startsWith(github.ref, 'refs/heads/release/')) &&
       !contains(needs.*.result, 'failure') &&
       !contains(needs.*.result, 'cancelled')
     steps:
@@ -519,14 +260,10 @@ jobs:
             -O /usr/local/bin/yq
           sudo chmod +x /usr/local/bin/yq
 
-      - name: Set env + tag from compute-tags
+      - name: Update GitOps values (staging)
         run: |
-          echo "ENV=${{ needs.compute-tags.outputs.deploy_env }}" >> $GITHUB_ENV
-          echo "TAG=${{ needs.compute-tags.outputs.tag }}"        >> $GITHUB_ENV
-
-      - name: Update GitOps values
-        run: |
-          FILE=gitops/environments/$ENV/values.yaml
+          FILE=gitops/environments/staging/values.yaml
+          TAG=${{ needs.compute-tags.outputs.tag }}
           update() {
             SERVICE=$1; CHANGED=$2
             if [[ "$CHANGED" == "true" || "${{ github.event_name }}" == "workflow_dispatch" ]]; then
@@ -534,7 +271,6 @@ jobs:
               yq -i ".$SERVICE.tag = \"$TAG\"" $FILE
             fi
           }
-          echo "Updating $FILE …"
           update frontend "${{ needs.detect-changes.outputs.frontend }}"
           update book     "${{ needs.detect-changes.outputs.book }}"
           update search   "${{ needs.detect-changes.outputs.search }}"
@@ -542,130 +278,25 @@ jobs:
 
       - name: Commit & Push
         run: |
+          TAG=${{ needs.compute-tags.outputs.tag }}
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add gitops/environments/$ENV/values.yaml
+          git add gitops/environments/staging/values.yaml
           git diff --staged --quiet && echo "Nothing to commit" && exit 0
-          git commit -m "gitops($ENV): bump image tags → $TAG [skip ci]"
+          git commit -m "gitops(staging): bump image tags → $TAG [skip ci]"
           git push
 
   # ─────────────────────────────────────────────────────────────────
-  # 9. POST-DEPLOY: DEV
-  # ─────────────────────────────────────────────────────────────────
-  post-deploy-dev:
-    name: Dev — post-deploy tests
-    runs-on: ubuntu-latest
-    needs: [gitops-update]
-    if: |
-      github.ref == 'refs/heads/develop' &&
-      needs.gitops-update.result == 'success'
-    steps:
-      - uses: actions/checkout@v4
-
-      # [DEVOPS OWNS] — ArgoCD CLI install, cache, sync wait
-      - name: Cache ArgoCD CLI
-        id: cache-argocd
-        uses: actions/cache@v4
-        with:
-          path: /usr/local/bin/argocd
-          key: argocd-${{ env.ARGOCD_VERSION }}
-
-      - name: Install ArgoCD CLI
-        if: steps.cache-argocd.outputs.cache-hit != 'true'
-        run: |
-          curl -sSL -o /usr/local/bin/argocd \
-            https://github.com/argoproj/argo-cd/releases/download/${{ env.ARGOCD_VERSION }}/argocd-linux-amd64
-          chmod +x /usr/local/bin/argocd
-
-      - name: Wait for ArgoCD sync (dev)
-        run: |
-          argocd app wait bookstore-dev \
-            --health \
-            --timeout 300 \
-            --server ${{ secrets.ARGOCD_SERVER }} \
-            --auth-token ${{ secrets.ARGOCD_TOKEN }} \
-            --insecure
-
-      # ── SMOKE TESTS  [DEVOPS OWNS] ────────────────────────────────
-      # DevOps writes and maintains these — pure HTTP health checks.
-      # Script: tests/smoke/smoke.sh
-      # What it checks: /health endpoints on all 4 services.
-      - name: Smoke tests — health endpoints
-        run: |
-          BASE=${{ secrets.DEV_URL }}
-
-          check() {
-            echo -n "  → $1 "
-            STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$1")
-            if [[ "$STATUS" == "200" ]]; then
-              echo "✅ ($STATUS)"
-            else
-              echo "❌ ($STATUS)"
-              exit 1
-            fi
-          }
-
-          check "$BASE/health"
-          check "$BASE/api/books/health"
-          check "$BASE/api/users/health"
-          check "$BASE/api/search/health"
-
-      # ── INTEGRATION TESTS  [SHARED] ───────────────────────────────
-      # DevOps owns: tool install (pytest), CI job, passing BASE_URL.
-      # Dev owns: test files at tests/integration/
-      # Script placeholder: tests/integration/test_service_connectivity.py
-      # What it checks: service-to-service calls (book→user, search→book)
-      - name: Install Python test dependencies
-        run: |
-          pip install pytest requests --quiet
-
-      - name: Integration tests — service connectivity
-        run: |
-          BASE=${{ secrets.DEV_URL }}
-
-          # Real basic checks DevOps can write without dev help:
-          echo "  → book API returns data"
-          curl -sf "$BASE/api/books?limit=1" | grep -q '"id"' \
-            && echo "  ✅ book API responding with data" \
-            || (echo "  ❌ book API not returning expected data" && exit 1)
-
-          echo "  → search service reachable"
-          curl -sf "$BASE/api/search?q=test" \
-            && echo "  ✅ search API reachable" \
-            || (echo "  ❌ search API not reachable" && exit 1)
-
-          # Full integration test suite — DEV TEAM PROVIDES THESE FILES
-          # Uncomment once tests/integration/ exists:
-          # pytest tests/integration/ \
-          #   --base-url=$BASE \
-          #   -v --tb=short \
-          #   --junit-xml=reports/integration-dev.xml
-
-          echo "⚠️  PENDING: Full integration suite blocked on dev team (tests/integration/)"
-
-      - name: Dev test summary
-        if: always()
-        run: |
-          echo "════════════════════════════════════════"
-          echo "  DEV POST-DEPLOY COMPLETE"
-          echo "  Smoke tests    : ✅ DevOps-owned"
-          echo "  Integration    : ✅ basic / ⚠️  full pending dev"
-          echo "════════════════════════════════════════"
-
-  # ─────────────────────────────────────────────────────────────────
-  # 10. POST-DEPLOY: STAGING
+  # 7. POST-DEPLOY: STAGING  [FULL TEST SUITE]
   # ─────────────────────────────────────────────────────────────────
   post-deploy-staging:
     name: Staging — post-deploy tests
     runs-on: ubuntu-latest
     needs: [gitops-update]
-    if: |
-      startsWith(github.ref, 'refs/heads/release/') &&
-      needs.gitops-update.result == 'success'
+    if: needs.gitops-update.result == 'success'
     steps:
       - uses: actions/checkout@v4
 
-      # [DEVOPS OWNS] — ArgoCD sync wait
       - name: Cache ArgoCD CLI
         id: cache-argocd
         uses: actions/cache@v4
@@ -683,15 +314,12 @@ jobs:
       - name: Wait for ArgoCD sync (staging)
         run: |
           argocd app wait bookstore-staging \
-            --health \
-            --timeout 300 \
+            --health --timeout 300 \
             --server ${{ secrets.ARGOCD_SERVER }} \
             --auth-token ${{ secrets.ARGOCD_TOKEN }} \
             --insecure
 
-      # ── SMOKE TESTS  [DEVOPS OWNS] ────────────────────────────────
-      # Identical to dev smoke tests — DevOps fully owns this.
-      # Script: tests/smoke/smoke.sh  (reused across envs)
+      # ── SMOKE TESTS  [DEVOPS OWNS] ───────────────────────────────
       - name: Smoke tests — health endpoints
         run: |
           BASE=${{ secrets.STAGING_URL }}
@@ -704,30 +332,21 @@ jobs:
           check "$BASE/api/users/health"
           check "$BASE/api/search/health"
 
-      # ── INTEGRATION TESTS  [SHARED] ───────────────────────────────
-      # DevOps owns: pytest install, BASE_URL injection, CI job.
-      # Dev owns: tests/integration/*.py
-      # Script placeholder: tests/integration/test_api_contracts.py
+      # ── INTEGRATION TESTS  [SHARED] ──────────────────────────────
+      # DevOps: pytest install. Dev: tests/integration/*.py
       - name: Install Python test dependencies
         run: pip install pytest requests --quiet
 
       - name: Integration tests
         run: |
           BASE=${{ secrets.STAGING_URL }}
-          # Full integration suite — DEV TEAM PROVIDES THESE FILES
           # Uncomment once tests/integration/ exists:
-          # pytest tests/integration/ \
-          #   --base-url=$BASE \
-          #   -v --tb=short \
+          # pytest tests/integration/ --base-url=$BASE -v --tb=short \
           #   --junit-xml=reports/integration-staging.xml
-          echo "⚠️  PENDING: Blocked on dev team (tests/integration/)"
+          echo "⚠️  PENDING: Add tests/integration/ (dev team)"
 
-      # ── E2E TESTS  [SHARED] ───────────────────────────────────────
-      # DevOps owns: Playwright install, browser deps, CI job, artifact upload.
-      # Dev/QA owns: tests/e2e/*.spec.ts (the actual user journey scripts)
-      # Script placeholder: tests/e2e/checkout.spec.ts
-      #                     tests/e2e/login.spec.ts
-      #                     tests/e2e/book-search.spec.ts
+      # ── E2E TESTS  [SHARED] ──────────────────────────────────────
+      # DevOps: Playwright install. Dev/QA: tests/e2e/*.spec.ts
       - name: Install Playwright + browser deps
         run: |
           npm install -g @playwright/test
@@ -737,11 +356,9 @@ jobs:
         run: |
           # Uncomment once tests/e2e/*.spec.ts exist:
           # npx playwright test \
-          #   --project=chromium \
-          #   --project=firefox \
-          #   --reporter=html \
-          #   --output=reports/playwright
-          echo "⚠️  PENDING: Blocked on QA/dev team (tests/e2e/*.spec.ts)"
+          #   --project=chromium --project=firefox \
+          #   --reporter=html --output=reports/playwright
+          echo "⚠️  PENDING: Add tests/e2e/*.spec.ts (QA/dev team)"
 
       - name: Upload Playwright report
         if: always()
@@ -751,11 +368,10 @@ jobs:
           path: reports/playwright/
           if-no-files-found: ignore
 
-      # ── PERFORMANCE TESTS  [DEVOPS OWNS] ─────────────────────────
-      # DevOps writes k6 scripts — simple JS HTTP calls, no app knowledge needed.
+      # ── PERFORMANCE TESTS  [DEVOPS OWNS] ────────────────────────
+      # DevOps writes k6 scripts — no app knowledge needed.
       # Scripts: tests/performance/staging-smoke.js
       #          tests/performance/staging-load.js
-      # What it checks: p95 latency < 500ms, error rate < 1%
       - name: Install k6
         run: |
           sudo gpg -k
@@ -767,30 +383,27 @@ jobs:
             https://dl.k6.io/deb stable main" | sudo tee /etc/apt/sources.list.d/k6.list
           sudo apt-get update -qq && sudo apt-get install -y k6
 
-      - name: Performance tests (k6) — smoke load
+      - name: Performance tests (k6) — smoke
         run: |
-          # DevOps writes this script — no dev help needed
-          # Script: tests/performance/staging-smoke.js
-          # Uncomment once script exists:
+          # Uncomment once tests/performance/staging-smoke.js exists:
           # k6 run tests/performance/staging-smoke.js \
           #   --env BASE_URL=${{ secrets.STAGING_URL }} \
           #   --out json=reports/k6-smoke.json \
           #   --summary-trend-stats="avg,p(95),p(99)"
           echo "⚠️  TODO (DevOps): create tests/performance/staging-smoke.js"
-          echo "     Checks: 10 VUs × 30s, p95 < 500ms, error rate < 1%"
+          echo "     Target: 10 VUs × 30s, p95 < 500ms, error rate < 1%"
 
       - name: Performance tests (k6) — load
         run: |
-          # Script: tests/performance/staging-load.js
-          # Uncomment once script exists:
+          # Uncomment once tests/performance/staging-load.js exists:
           # k6 run tests/performance/staging-load.js \
           #   --env BASE_URL=${{ secrets.STAGING_URL }} \
           #   --out json=reports/k6-load.json
           echo "⚠️  TODO (DevOps): create tests/performance/staging-load.js"
-          echo "     Checks: ramp to 50 VUs over 5m, soak 10m, ramp down"
+          echo "     Target: ramp to 50 VUs over 5m, soak 10m, ramp down"
 
-      # ── OWASP ZAP DAST  [DEVOPS OWNS] ────────────────────────────
-      # DevOps fully owns ZAP config, rules file, and thresholds.
+      # ── OWASP ZAP DAST  [DEVOPS OWNS] ───────────────────────────
+      # DevOps owns config, rules file, thresholds.
       # Config: .zap/rules.tsv
       - name: OWASP ZAP — DAST baseline scan
         uses: zaproxy/action-baseline@v0.12.0
@@ -813,31 +426,29 @@ jobs:
           echo "════════════════════════════════════════"
           echo "  STAGING POST-DEPLOY COMPLETE"
           echo ""
-          echo "  [DEVOPS OWNS — done]"
+          echo "  [DEVOPS — done]"
           echo "  ✅ Smoke tests"
           echo "  ✅ OWASP ZAP DAST"
-          echo "  ✅ k6 install + job wired (scripts TODO)"
-          echo "  ✅ Playwright install + job wired (specs TODO)"
+          echo "  ✅ k6 install + jobs wired (scripts TODO)"
+          echo "  ✅ Playwright install + jobs wired (specs TODO)"
           echo ""
-          echo "  [SHARED — pending dev/QA]"
-          echo "  ⚠️  Integration: needs tests/integration/*.py"
-          echo "  ⚠️  E2E:         needs tests/e2e/*.spec.ts"
-          echo "  ⚠️  k6 scripts:  DevOps to write (no blocker)"
+          echo "  [PENDING dev/QA]"
+          echo "  ⚠️  Integration : tests/integration/*.py"
+          echo "  ⚠️  E2E         : tests/e2e/*.spec.ts"
+          echo "  ⚠️  k6 scripts  : DevOps to write (no blocker)"
           echo ""
           echo "  ⏳ Awaiting manual QA sign-off"
           echo "════════════════════════════════════════"
 
   # ─────────────────────────────────────────────────────────────────
-  # 11. MANUAL QA GATE — staging  [DEVOPS OWNS config]
-  #     Configure: Settings → Environments → staging → reviewers
+  # 8. MANUAL QA GATE  [DEVOPS OWNS config]
+  #    Configure: Settings → Environments → staging → required reviewers
   # ─────────────────────────────────────────────────────────────────
   qa-approval:
     name: "⏳ Manual QA sign-off (staging)"
     runs-on: ubuntu-latest
     needs: [post-deploy-staging]
-    if: |
-      startsWith(github.ref, 'refs/heads/release/') &&
-      needs.post-deploy-staging.result == 'success'
+    if: needs.post-deploy-staging.result == 'success'
     environment:
       name: staging
     steps:
@@ -845,126 +456,17 @@ jobs:
         run: |
           echo "✅ QA sign-off complete — release approved to merge to main"
 
-  # ─────────────────────────────────────────────────────────────────
-  # 12. POST-DEPLOY: PROD
-  # ─────────────────────────────────────────────────────────────────
-  post-deploy-prod:
-    name: Prod — smoke + monitoring check
-    runs-on: ubuntu-latest
-    needs: [gitops-update, prod-approval]
-    if: |
-      github.ref == 'refs/heads/main' &&
-      needs.gitops-update.result == 'success' &&
-      needs.prod-approval.result == 'success'
-    steps:
-      - uses: actions/checkout@v4
-
-      # [DEVOPS OWNS] — ArgoCD sync wait
-      - name: Cache ArgoCD CLI
-        id: cache-argocd
-        uses: actions/cache@v4
-        with:
-          path: /usr/local/bin/argocd
-          key: argocd-${{ env.ARGOCD_VERSION }}
-
-      - name: Install ArgoCD CLI
-        if: steps.cache-argocd.outputs.cache-hit != 'true'
-        run: |
-          curl -sSL -o /usr/local/bin/argocd \
-            https://github.com/argoproj/argo-cd/releases/download/${{ env.ARGOCD_VERSION }}/argocd-linux-amd64
-          chmod +x /usr/local/bin/argocd
-
-      - name: Wait for ArgoCD sync (prod)
-        run: |
-          argocd app wait bookstore-prod \
-            --health \
-            --timeout 300 \
-            --server ${{ secrets.ARGOCD_SERVER }} \
-            --auth-token ${{ secrets.ARGOCD_TOKEN }} \
-            --insecure
-
-      # ── SMOKE TESTS  [DEVOPS OWNS] ────────────────────────────────
-      # Minimal — feature coverage was done in staging.
-      # Script: tests/smoke/smoke.sh (same script, PROD_URL injected)
-      - name: Smoke tests — prod health check
-        run: |
-          BASE=${{ secrets.PROD_URL }}
-          check() {
-            STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$1")
-            [[ "$STATUS" == "200" ]] && echo "  ✅ $1" || (echo "  ❌ $1 ($STATUS)" && exit 1)
-          }
-          check "$BASE/health"
-          check "$BASE/api/books/health"
-          check "$BASE/api/users/health"
-          check "$BASE/api/search/health"
-
-      # ── SYNTHETIC MONITORING  [DEVOPS OWNS] ──────────────────────
-      # DevOps writes these — critical user path curl checks.
-      # Later: replace with Datadog/Grafana synthetic monitors.
-      # Script: tests/smoke/synthetic.sh
-      - name: Synthetic monitoring — critical user paths
-        run: |
-          BASE=${{ secrets.PROD_URL }}
-
-          echo "  → Homepage loads"
-          curl -sf --max-time 5 "$BASE/" > /dev/null \
-            && echo "  ✅ homepage" || (echo "  ❌ homepage" && exit 1)
-
-          echo "  → Book listing API"
-          curl -sf --max-time 5 "$BASE/api/books?limit=1" > /dev/null \
-            && echo "  ✅ book listing" || (echo "  ❌ book listing" && exit 1)
-
-          echo "  → Search API"
-          curl -sf --max-time 5 "$BASE/api/search?q=test" > /dev/null \
-            && echo "  ✅ search" || (echo "  ❌ search" && exit 1)
-
-          # TODO (DevOps): replace curls above with Datadog synthetic API call:
-          # curl -X POST "https://api.datadoghq.com/api/v1/synthetics/tests/trigger/ci" \
-          #   -H "DD-API-KEY: ${{ secrets.DATADOG_API_KEY }}" \
-          #   -d '{"tests": [{"public_id": "abc-def-ghi"}]}'
-
-      # ── RELEASE TAGGING  [DEVOPS OWNS] ───────────────────────────
-      - name: Tag release in Git
-        run: |
-          SHA=$(echo $GITHUB_SHA | cut -c1-8)
-          TAG="release-$(date +%Y%m%d)-${SHA}"
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -a "$TAG" -m "Production release $TAG"
-          git push origin "$TAG"
-          echo "Tagged: $TAG"
-
-      - name: Prod summary
-        run: |
-          echo "════════════════════════════════════════"
-          echo "  PROD DEPLOY COMPLETE ✅"
-          echo ""
-          echo "  [DEVOPS OWNS — all done]"
-          echo "  ✅ Smoke tests"
-          echo "  ✅ Synthetic monitoring (curl — Datadog TODO)"
-          echo "  ✅ Git release tag"
-          echo "  ✅ ArgoCD health watch (auto-rollback on failure)"
-          echo "════════════════════════════════════════"
-
 # ═══════════════════════════════════════════════════════════════════
-#  OWNERSHIP SUMMARY — what to hand to your dev team
-#  ───────────────────────────────────────────────────────────────────
+#  SECRETS REQUIRED
+#    ECR_REGISTRY, ARGOCD_SERVER, ARGOCD_TOKEN
+#    STAGING_URL, SONAR_TOKEN
 #
-#  DevOps creates the following test scripts (no dev help needed):
-#    tests/smoke/smoke.sh                    health endpoint curls
-#    tests/smoke/synthetic.sh                critical path curls
-#    tests/performance/staging-smoke.js      k6: 10 VUs × 30s
-#    tests/performance/staging-load.js       k6: ramp to 50 VUs
-#    .zap/rules.tsv                          ZAP false-positive rules
+#  DEV TEAM DELIVERABLES
+#    tests/integration/       pytest integration tests
+#    tests/e2e/*.spec.ts      Playwright user journeys
 #
-#  Dev team must provide these (pipeline is wired and waiting):
-#    services/{svc}/tests/unit/              pytest unit tests
-#    tests/integration/                      pytest integration tests
-#    tests/e2e/*.spec.ts                     Playwright user journeys
-#
-#  Secrets required (Settings → Secrets and variables → Actions):
-#    ARGOCD_SERVER, ARGOCD_TOKEN
-#    DEV_URL, STAGING_URL, PROD_URL
-#    ECR_REGISTRY
-#    SONAR_TOKEN, SONAR_HOST_URL
+#  DEVOPS TODO (no dev dependency)
+#    tests/performance/staging-smoke.js
+#    tests/performance/staging-load.js
+#    .zap/rules.tsv
 # ═══════════════════════════════════════════════════════════════════
