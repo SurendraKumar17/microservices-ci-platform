@@ -8,7 +8,7 @@ const PORT = process.env.PORT || 3003;
 app.use(express.json());
 
 // ─────────────────────────────────────────
-// Prometheus metrics setup
+// Prometheus metrics
 // ─────────────────────────────────────────
 client.collectDefaultMetrics({ prefix: 'nodejs_' });
 
@@ -51,71 +51,127 @@ const pool = new Pool({
   database: process.env.DB_NAME || 'flights',
   user: process.env.DB_USER || 'postgres',
   password: process.env.DB_PASSWORD || 'postgres',
-  ssl: {
-    rejectUnauthorized: false
-  }
+  ssl: { rejectUnauthorized: false }
 });
 
+// ─────────────────────────────────────────
+// Seed data function
+// ─────────────────────────────────────────
+async function seedData() {
+  await pool.query(`
+    INSERT INTO flights
+      (origin, destination, destination_city, departure, arrival, airline, icon, class, duration, stops, price, seats_available)
+    VALUES
+      -- London
+      ('New York (JFK)', 'London (LHR)', 'London', NOW() + INTERVAL '2 days', NOW() + INTERVAL '2 days 7 hours',  'British Airways',    '✈️',  'Economy',  '7h 00m',  'Direct',           499,  80),
+      ('New York (JFK)', 'London (LHR)', 'London', NOW() + INTERVAL '3 days', NOW() + INTERVAL '3 days 9 hours',  'Emirates',           '🛫', 'Economy',  '9h 00m',  '1 stop',           389,  60),
+      ('New York (JFK)', 'London (LHR)', 'London', NOW() + INTERVAL '4 days', NOW() + INTERVAL '4 days 8 hours',  'Virgin Atlantic',    '🛩️', 'Business', '7h 30m',  'Direct',           899,  20),
+
+      -- Paris
+      ('New York (JFK)', 'Paris (CDG)',  'Paris',  NOW() + INTERVAL '2 days', NOW() + INTERVAL '2 days 7 hours',  'Air France',         '✈️',  'Economy',  '7h 20m',  'Direct',           389,  90),
+      ('New York (JFK)', 'Paris (CDG)',  'Paris',  NOW() + INTERVAL '3 days', NOW() + INTERVAL '3 days 9 hours',  'Lufthansa',          '🛩️', 'Economy',  '9h 30m',  '1 stop via FRA',   320,  70),
+      ('New York (JFK)', 'Paris (CDG)',  'Paris',  NOW() + INTERVAL '5 days', NOW() + INTERVAL '5 days 7 hours',  'Delta Airlines',     '🛫', 'Business', '7h 15m',  'Direct',           799,  15),
+
+      -- Tokyo
+      ('New York (JFK)', 'Tokyo (NRT)',  'Tokyo',  NOW() + INTERVAL '2 days', NOW() + INTERVAL '2 days 14 hours', 'Japan Airlines',     '✈️',  'Economy',  '14h 00m', 'Direct',           699,  75),
+      ('New York (JFK)', 'Tokyo (NRT)',  'Tokyo',  NOW() + INTERVAL '3 days', NOW() + INTERVAL '3 days 16 hours', 'ANA',                '🛫', 'Economy',  '16h 00m', '1 stop',           580,  55),
+      ('New York (JFK)', 'Tokyo (NRT)',  'Tokyo',  NOW() + INTERVAL '4 days', NOW() + INTERVAL '4 days 14 hours', 'Singapore Airlines', '✈️',  'Business', '14h 30m', 'Direct',           1299, 10),
+
+      -- Bali
+      ('New York (JFK)', 'Bali (DPS)',   'Bali',   NOW() + INTERVAL '2 days', NOW() + INTERVAL '2 days 20 hours', 'Emirates',           '🛫', 'Economy',  '20h 30m', '1 stop via DXB',   549,  65),
+      ('New York (JFK)', 'Bali (DPS)',   'Bali',   NOW() + INTERVAL '3 days', NOW() + INTERVAL '3 days 22 hours', 'Cathay Pacific',     '✈️',  'Economy',  '22h 00m', '1 stop via HKG',   489,  50),
+      ('New York (JFK)', 'Bali (DPS)',   'Bali',   NOW() + INTERVAL '5 days', NOW() + INTERVAL '5 days 21 hours', 'Singapore Airlines', '🛩️', 'Business', '21h 00m', '1 stop via SIN',   1499, 8)
+
+    ON CONFLICT DO NOTHING;
+  `);
+  console.log('Flight data seeded — London, Paris, Tokyo, Bali');
+}
+
+// ─────────────────────────────────────────
+// Init DB + auto-seed if empty
+// ─────────────────────────────────────────
 async function initDB() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS flights (
       id SERIAL PRIMARY KEY,
-      origin VARCHAR(10) NOT NULL,
-      destination VARCHAR(10) NOT NULL,
-      departure TIMESTAMP NOT NULL,
-      arrival TIMESTAMP NOT NULL,
+      origin VARCHAR(100),
+      destination VARCHAR(100),
+      destination_city VARCHAR(100),
+      departure TIMESTAMP,
+      arrival TIMESTAMP,
       airline VARCHAR(100),
-      price DECIMAL(10,2) NOT NULL,
+      icon VARCHAR(10) DEFAULT '✈️',
+      class VARCHAR(50) DEFAULT 'Economy',
+      duration VARCHAR(20),
+      stops VARCHAR(50) DEFAULT 'Direct',
+      price DECIMAL(10,2),
       seats_available INT DEFAULT 100,
       created_at TIMESTAMP DEFAULT NOW()
     );
-
-    CREATE TABLE IF NOT EXISTS hotels (
-      id SERIAL PRIMARY KEY,
-      name VARCHAR(255) NOT NULL,
-      city VARCHAR(100) NOT NULL,
-      rating DECIMAL(2,1),
-      price_per_night DECIMAL(10,2) NOT NULL,
-      rooms_available INT DEFAULT 50,
-      created_at TIMESTAMP DEFAULT NOW()
-    );
   `);
+
+  // auto-seed on first start — no manual curl needed
+  const { rows } = await pool.query('SELECT COUNT(*) FROM flights');
+  if (parseInt(rows[0].count) === 0) {
+    await seedData();
+  } else {
+    console.log(`DB already has ${rows[0].count} flights — skipping seed`);
+  }
+
   console.log('Search DB initialized');
 }
 
 // ─────────────────────────────────────────
 // Routes
 // ─────────────────────────────────────────
-app.get('/metrics', async (req, res) => {
-  res.set('Content-Type', client.register.contentType);
-  res.end(await client.register.metrics());
+app.get('/health', (req, res) => res.json({ status: 'ok', service: 'search' }));
+
+// ─────────────────────────────────────────
+// Generic search — destination card click
+// GET /api/search?q=paris
+// ─────────────────────────────────────────
+app.get('/api/search', async (req, res) => {
+  const { q } = req.query;
+  try {
+    const result = await pool.query(
+      `SELECT * FROM flights
+       WHERE seats_available > 0
+       AND (
+         origin ILIKE $1 OR
+         destination ILIKE $1 OR
+         destination_city ILIKE $1
+       )
+       ORDER BY price ASC`,
+      [`%${q || ''}%`]
+    );
+    res.json({ flights: result.rows });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Search failed' });
+  }
 });
 
-app.get('/health', (req, res) => res.json({ status: 'ok', service: 'search' }));
-app.get('/ready',  (req, res) => res.json({ status: 'ready', service: 'search' }));
-
-// Search flights
+// ─────────────────────────────────────────
+// Flight search — search box
+// GET /api/search/flights?from=New York (JFK)&to=London&date=2025-06-15
+// Also supports legacy: ?origin=...&destination=...
+// ─────────────────────────────────────────
 app.get('/api/search/flights', async (req, res) => {
-  const { origin, destination, date } = req.query;
+  const { from, to, origin, destination } = req.query;
+
+  // support both from/to (frontend) and origin/destination (legacy)
+  const src  = from  || origin  || '';
+  const dest = to    || destination || '';
+
   try {
-    let query = 'SELECT * FROM flights WHERE seats_available > 0';
-    const params = [];
-
-    if (origin) {
-      params.push(origin.toUpperCase());
-      query += ` AND origin = $${params.length}`;
-    }
-    if (destination) {
-      params.push(destination.toUpperCase());
-      query += ` AND destination = $${params.length}`;
-    }
-    if (date) {
-      params.push(date);
-      query += ` AND DATE(departure) = $${params.length}`;
-    }
-
-    query += ' ORDER BY price ASC';
-    const result = await pool.query(query, params);
+    const result = await pool.query(
+      `SELECT * FROM flights
+       WHERE seats_available > 0
+       AND ($1 = '' OR origin ILIKE $1)
+       AND ($2 = '' OR destination ILIKE $2 OR destination_city ILIKE $2)
+       ORDER BY price ASC`,
+      [`%${src}%`, `%${dest}%`]
+    );
     res.json({ flights: result.rows });
   } catch (err) {
     console.error(err);
@@ -123,52 +179,42 @@ app.get('/api/search/flights', async (req, res) => {
   }
 });
 
-// Search hotels
+// ─────────────────────────────────────────
+// Hotel search — frontend featured hotels
+// GET /api/search/hotels?city=featured
+// ─────────────────────────────────────────
 app.get('/api/search/hotels', async (req, res) => {
-  const { city } = req.query;
+  const hotels = [
+    { name: 'The Savoy',         location: 'London, UK',      icon: '🏨', stars: '★★★★★', price: 320,  bg: '#dbeafe' },
+    { name: 'Hotel de Crillon',  location: 'Paris, France',   icon: '🏩', stars: '★★★★★', price: 480,  bg: '#fce7f3' },
+    { name: 'Park Hyatt Tokyo',  location: 'Tokyo, Japan',    icon: '🗼', stars: '★★★★★', price: 550,  bg: '#dcfce7' },
+    { name: 'Four Seasons Bali', location: 'Bali, Indonesia', icon: '🌺', stars: '★★★★★', price: 290,  bg: '#fef3c7' },
+    { name: 'Burj Al Arab',      location: 'Dubai, UAE',      icon: '⛵', stars: '★★★★★', price: 1200, bg: '#ede9fe' },
+    { name: 'Marina Bay Sands',  location: 'Singapore',       icon: '🌃', stars: '★★★★★', price: 380,  bg: '#ecfeff' },
+  ];
+  res.json({ hotels });
+});
+
+// ─────────────────────────────────────────
+// Manual seed endpoint (kept for testing)
+// POST /api/search/seed
+// ─────────────────────────────────────────
+app.post('/api/search/seed', async (req, res) => {
   try {
-    let query = 'SELECT * FROM hotels WHERE rooms_available > 0';
-    const params = [];
-
-    if (city) {
-      params.push(city);
-      query += ` AND LOWER(city) = LOWER($${params.length})`;
-    }
-
-    query += ' ORDER BY price_per_night ASC';
-    const result = await pool.query(query, params);
-    res.json({ hotels: result.rows });
+    await seedData();
+    res.json({ message: 'Seeded successfully', routes: ['London', 'Paris', 'Tokyo', 'Bali'] });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: 'Failed to search hotels' });
+    res.status(500).json({ error: 'Seed failed', detail: err.message });
   }
 });
 
-// Seed sample data
-app.post('/api/search/seed', async (req, res) => {
-  try {
-    await pool.query(`
-      INSERT INTO flights (origin, destination, departure, arrival, airline, price)
-      VALUES
-        ('JFK', 'LAX', NOW() + interval '1 day', NOW() + interval '1 day 6 hours', 'SkyAir', 299.99),
-        ('LAX', 'JFK', NOW() + interval '2 days', NOW() + interval '2 days 6 hours', 'SkyAir', 319.99),
-        ('JFK', 'LHR', NOW() + interval '3 days', NOW() + interval '3 days 7 hours', 'GlobalJet', 599.99),
-        ('LHR', 'DXB', NOW() + interval '4 days', NOW() + interval '4 days 7 hours', 'GlobalJet', 449.99)
-      ON CONFLICT DO NOTHING;
-
-      INSERT INTO hotels (name, city, rating, price_per_night)
-      VALUES
-        ('Sky Hotel NYC', 'New York', 4.5, 199.99),
-        ('Pacific View', 'Los Angeles', 4.2, 179.99),
-        ('London Grand', 'London', 4.7, 299.99),
-        ('Desert Palace', 'Dubai', 4.8, 399.99)
-      ON CONFLICT DO NOTHING;
-    `);
-    res.json({ message: 'Sample data seeded' });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Seed failed' });
-  }
+// ─────────────────────────────────────────
+// Prometheus metrics
+// ─────────────────────────────────────────
+app.get('/metrics', async (req, res) => {
+  res.set('Content-Type', client.register.contentType);
+  res.end(await client.register.metrics());
 });
 
 // ─────────────────────────────────────────
@@ -177,4 +223,4 @@ app.post('/api/search/seed', async (req, res) => {
 initDB()
   .then(() => app.listen(PORT, () =>
     console.log(`Search service running on port ${PORT}`)))
-  .catch(err => { console.error('DB init failed:', err); process.exit(1); });
+  .catch(err => { console.error(err); process.exit(1); });
