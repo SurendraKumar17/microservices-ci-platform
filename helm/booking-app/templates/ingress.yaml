@@ -9,7 +9,7 @@ metadata:
 spec:
   ingressClassName: {{ .Values.ingress.className }}
   rules:
-  - http:   # 👈 removed host (important for ALB DNS access)
+  - http:   # removed host (important for ALB DNS access)
       paths:
 
       - path: /api/users
