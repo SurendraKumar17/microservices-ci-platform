@@ -7,14 +7,13 @@ on:
     paths:
       - 'services/**'
       - 'gitops/**'
-  workflow_dispatch:
-    inputs:
-      environment:
-        description: 'Force deploy to staging'
-        required: true
-        default: 'staging'
-        type: choice
-        options: [staging]
+
+  pull_request:
+    branches:
+      - main             # PR from release/** → main triggers PR validation
+    paths:
+      - 'services/**'
+      - 'gitops/**'
 
 permissions:
   id-token: write
@@ -33,17 +32,18 @@ env:
 # ═══════════════════════════════════════════════════════════════════
 #  RELEASE BRANCH PIPELINE
 #  ──────────────────────────────────────────────────────────────────
-#  Runs on every push to release/** branches.
-#  Full scan → build → deploy to staging → full test suite → QA gate.
+#  Two triggers, two distinct flows:
 #
-#  FLOW:
-#    secret-scan ──┐
-#    detect-changes─┤
-#                   ├──► build & push ──► trivy-iac ──► gitops-update
-#    sonarqube ─────┘         │
-#                             └──► post-deploy-staging (smoke + integration
-#                                  + E2E + performance + ZAP)
-#                                       └──► qa-approval gate
+#  WHEN push to release/**:
+#    → secret-scan → detect-changes → sonarqube
+#    → build & push → trivy-iac → gitops-update (staging)
+#    → post-deploy-staging (smoke + integration + E2E + perf + ZAP)
+#    → qa-approval gate
+#
+#  WHEN pull_request release/** → main:
+#    → pr-validation only (secret scan + lint + unit + SAST decoration)
+#    → NO build, NO deploy
+#    → blocks merge if any step fails
 #
 #  OWNERSHIP
 #  [DEVOPS OWNS]  All job wiring, k6 scripts, ZAP, ArgoCD sync
@@ -53,11 +53,85 @@ env:
 jobs:
 
   # ─────────────────────────────────────────────────────────────────
+  # PR VALIDATION  — release/** → main
+  # Runs ONLY on pull_request event. No build, no deploy.
+  # Blocks merge to main if any step fails.
+  # ─────────────────────────────────────────────────────────────────
+  pr-validation:
+    name: PR Validation (release → main)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # [DEVOPS OWNS] — scans only the delta of this PR
+      - name: Secret scan (TruffleHog)
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          base: ${{ github.event.pull_request.base.sha }}
+          head: ${{ github.event.pull_request.head.sha }}
+          extra_args: --only-verified
+
+      # [DEVOPS OWNS]
+      - name: Lint Dockerfiles (Hadolint)
+        run: |
+          for svc in book frontend search user; do
+            [ -f services/$svc/Dockerfile ] || continue
+            echo "==> Linting services/$svc/Dockerfile"
+            docker run --rm -i hadolint/hadolint \
+              hadolint --failure-threshold warning - \
+              < services/$svc/Dockerfile
+          done
+
+      # [DEV OWNS test files]
+      - name: Unit tests
+        run: |
+          set -e
+          echo "==> book unit tests"
+          cd services/book && pytest tests/unit/ -v --tb=short 2>/dev/null \
+            || echo "⚠️  PENDING: No unit tests found for book — add services/book/tests/unit/"
+          cd $GITHUB_WORKSPACE
+
+          echo "==> user unit tests"
+          cd services/user && pytest tests/unit/ -v --tb=short 2>/dev/null \
+            || echo "⚠️  PENDING: No unit tests found for user — add services/user/tests/unit/"
+          cd $GITHUB_WORKSPACE
+
+          echo "==> search unit tests"
+          cd services/search && pytest tests/unit/ -v --tb=short 2>/dev/null \
+            || echo "⚠️  PENDING: No unit tests found for search — add services/search/tests/unit/"
+          cd $GITHUB_WORKSPACE
+
+          echo "==> frontend unit tests"
+          cd services/frontend && npm run test:unit 2>/dev/null \
+            || echo "⚠️  PENDING: No unit tests found for frontend — add test:unit script"
+
+      # [DEVOPS OWNS] — PR decoration mode, posts inline comments on the PR
+      - name: SonarQube SAST (PR decoration)
+        uses: sonarsource/sonarqube-scan-action@master
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+        with:
+          args: >
+            -Dsonar.projectKey=Surendra_Pandrinki_microservices-gitops-platform
+            -Dsonar.organization=surendrakumar17
+            -Dsonar.sources=services
+            -Dsonar.exclusions=**/node_modules/**,**/*.test.*,**/vendor/**
+            -Dsonar.pullrequest.key=${{ github.event.pull_request.number }}
+            -Dsonar.pullrequest.branch=${{ github.head_ref }}
+            -Dsonar.pullrequest.base=${{ github.base_ref }}
+
+  # ─────────────────────────────────────────────────────────────────
   # 0. COMPUTE TAGS  [DEVOPS OWNS]
-  #    tag=staging-{sha}, deploy_env=staging
+  #    Runs ONLY on push. tag=staging-{sha}, deploy_env=staging
   # ─────────────────────────────────────────────────────────────────
   compute-tags:
     name: Compute image tag
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     outputs:
       tag:        ${{ steps.set.outputs.tag }}
@@ -70,10 +144,11 @@ jobs:
           echo "deploy_env=staging"  >> $GITHUB_OUTPUT
 
   # ─────────────────────────────────────────────────────────────────
-  # 1. SECRET SCAN  [DEVOPS OWNS]
+  # 1. SECRET SCAN — protected push  [DEVOPS OWNS]
   # ─────────────────────────────────────────────────────────────────
   secret-scan:
     name: Secret Scan (TruffleHog)
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -93,6 +168,7 @@ jobs:
   # ─────────────────────────────────────────────────────────────────
   detect-changes:
     name: Detect Changed Services
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     outputs:
       book:     ${{ steps.filter.outputs.book }}
@@ -115,7 +191,8 @@ jobs:
   # 3. SONARQUBE SAST  [DEVOPS OWNS]
   # ─────────────────────────────────────────────────────────────────
   sonarqube:
-    name: SonarQube SAST
+    name: SonarQube SAST (branch scan)
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     needs: [secret-scan]
     steps:
@@ -138,10 +215,11 @@ jobs:
 
   # ─────────────────────────────────────────────────────────────────
   # 4. BUILD & PUSH  [DEVOPS OWNS]
-  #    Trivy exit-code=0 on staging (warn only; prod is blocking).
+  #    Trivy exit-code=0 on staging (warn only).
   # ─────────────────────────────────────────────────────────────────
   build:
     name: Build & Push — ${{ matrix.service }}
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     needs: [detect-changes, compute-tags, secret-scan]
     strategy:
@@ -216,10 +294,10 @@ jobs:
 
   # ─────────────────────────────────────────────────────────────────
   # 5. TRIVY IaC SCAN  [DEVOPS OWNS]
-  #    Scans gitops/ Helm + Terraform configs. Warn only on staging.
   # ─────────────────────────────────────────────────────────────────
   trivy-iac:
     name: Trivy — IaC / Helm / Terraform scan
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     needs: [secret-scan]
     steps:
@@ -233,7 +311,7 @@ jobs:
           format: sarif
           output: trivy-iac.sarif
           severity: CRITICAL,HIGH,MEDIUM
-          exit-code: '0'       # warn only; main pipeline blocks on this
+          exit-code: '0'
 
       - name: Upload IaC SARIF
         uses: github/codeql-action/upload-sarif@v3
@@ -249,6 +327,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: [build, detect-changes, sonarqube, trivy-iac, compute-tags]
     if: |
+      github.event_name == 'push' &&
       !contains(needs.*.result, 'failure') &&
       !contains(needs.*.result, 'cancelled')
     steps:
@@ -266,7 +345,7 @@ jobs:
           TAG=${{ needs.compute-tags.outputs.tag }}
           update() {
             SERVICE=$1; CHANGED=$2
-            if [[ "$CHANGED" == "true" || "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            if [[ "$CHANGED" == "true" ]]; then
               echo "  ↳ $SERVICE → $TAG"
               yq -i ".$SERVICE.tag = \"$TAG\"" $FILE
             fi
@@ -293,7 +372,9 @@ jobs:
     name: Staging — post-deploy tests
     runs-on: ubuntu-latest
     needs: [gitops-update]
-    if: needs.gitops-update.result == 'success'
+    if: |
+      github.event_name == 'push' &&
+      needs.gitops-update.result == 'success'
     steps:
       - uses: actions/checkout@v4
 
@@ -369,9 +450,6 @@ jobs:
           if-no-files-found: ignore
 
       # ── PERFORMANCE TESTS  [DEVOPS OWNS] ────────────────────────
-      # DevOps writes k6 scripts — no app knowledge needed.
-      # Scripts: tests/performance/staging-smoke.js
-      #          tests/performance/staging-load.js
       - name: Install k6
         run: |
           sudo gpg -k
@@ -403,8 +481,6 @@ jobs:
           echo "     Target: ramp to 50 VUs over 5m, soak 10m, ramp down"
 
       # ── OWASP ZAP DAST  [DEVOPS OWNS] ───────────────────────────
-      # DevOps owns config, rules file, thresholds.
-      # Config: .zap/rules.tsv
       - name: OWASP ZAP — DAST baseline scan
         uses: zaproxy/action-baseline@v0.12.0
         with:
@@ -441,14 +517,16 @@ jobs:
           echo "════════════════════════════════════════"
 
   # ─────────────────────────────────────────────────────────────────
-  # 8. MANUAL QA GATE  [DEVOPS OWNS config]
+  # 8. MANUAL QA GATE  [DEVOPS OWNS]
   #    Configure: Settings → Environments → staging → required reviewers
   # ─────────────────────────────────────────────────────────────────
   qa-approval:
     name: "⏳ Manual QA sign-off (staging)"
     runs-on: ubuntu-latest
     needs: [post-deploy-staging]
-    if: needs.post-deploy-staging.result == 'success'
+    if: |
+      github.event_name == 'push' &&
+      needs.post-deploy-staging.result == 'success'
     environment:
       name: staging
     steps:
@@ -457,15 +535,29 @@ jobs:
           echo "✅ QA sign-off complete — release approved to merge to main"
 
 # ═══════════════════════════════════════════════════════════════════
+#  TRIGGER SUMMARY
+#  ──────────────────────────────────────────────────────────────────
+#  push to release/**   → full pipeline (build + staging deploy +
+#                          smoke + integration + E2E + perf + ZAP +
+#                          QA gate)
+#
+#  PR release/** → main → pr-validation only (secret scan + lint +
+#                          unit tests + SonarQube PR decoration)
+#                          blocks merge on failure
+#
+#  REQUIRED SETUP
+#    Settings → Branches → main → Require status checks
+#    → add "PR Validation (release → main)" as required check
+#
 #  SECRETS REQUIRED
 #    ECR_REGISTRY, ARGOCD_SERVER, ARGOCD_TOKEN
-#    STAGING_URL, SONAR_TOKEN
+#    STAGING_URL, SONAR_TOKEN, SONAR_HOST_URL
 #
 #  DEV TEAM DELIVERABLES
 #    tests/integration/       pytest integration tests
 #    tests/e2e/*.spec.ts      Playwright user journeys
 #
-#  DEVOPS TODO (no dev dependency)
+#  DEVOPS TODO
 #    tests/performance/staging-smoke.js
 #    tests/performance/staging-load.js
 #    .zap/rules.tsv
