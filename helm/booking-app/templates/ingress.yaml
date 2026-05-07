@@ -28,15 +28,15 @@ spec:
             port:
               number: 3003
 
-      - path: /api/book
+      - path: /api/bookings        # ← was /api/book, must match actual route
         pathType: Prefix
         backend:
           service:
-            name: {{ .Release.Name }}-book   # ✅ FIXED
+            name: {{ .Release.Name }}-book
             port:
               number: 3001
 
-      - path: /
+      - path: /                    # catch-all must always be last
         pathType: Prefix
         backend:
           service:
