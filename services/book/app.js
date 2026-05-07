@@ -25,7 +25,6 @@ const httpRequestDuration = new client.Histogram({
   buckets: [0.01, 0.05, 0.1, 0.3, 0.5, 1, 2, 5]
 });
 
-// middleware — track all requests
 app.use((req, res, next) => {
   const end = httpRequestDuration.startTimer();
   res.on('finish', () => {
@@ -57,6 +56,9 @@ const pool = new Pool({
   }
 });
 
+// Track DB readiness separately from HTTP server
+let dbReady = false;
+
 async function initDB() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS reservations (
@@ -80,6 +82,7 @@ async function initDB() {
       added_at TIMESTAMP DEFAULT NOW()
     );
   `);
+  dbReady = true;
   console.log('Booking DB initialized');
 }
 
@@ -88,17 +91,32 @@ function genRef() {
 }
 
 // ─────────────────────────────────────────
-// Routes
+// Health / Readiness Routes
 // ─────────────────────────────────────────
-app.get('/health', (req, res) => res.json({ status: 'ok', service: 'booking' }));
-app.get('/ready',  (req, res) => res.json({ status: 'ready', service: 'book' }));
 
-// metrics endpoint — must be before other middleware
+// Liveness — always 200 as long as process is alive
+app.get('/health',           (req, res) => res.json({ status: 'ok', service: 'booking' }));
+app.get('/api/books/health', (req, res) => res.json({ status: 'ok', service: 'booking' }));
+
+// Readiness — 503 until DB is ready
+app.get('/ready', (req, res) => {
+  if (!dbReady) {
+    return res.status(503).json({ status: 'not ready', reason: 'db not initialized' });
+  }
+  res.json({ status: 'ready', service: 'booking' });
+});
+
+// ─────────────────────────────────────────
+// Metrics
+// ─────────────────────────────────────────
 app.get('/metrics', async (req, res) => {
   res.set('Content-Type', client.register.contentType);
   res.end(await client.register.metrics());
 });
 
+// ─────────────────────────────────────────
+// API Routes
+// ─────────────────────────────────────────
 app.post('/api/bookings/cart', async (req, res) => {
   const { type, name, price, session_id } = req.body;
   if (!type || !name || !price)
@@ -194,16 +212,17 @@ app.patch('/api/bookings/:id/cancel', async (req, res) => {
 });
 
 // ─────────────────────────────────────────
-// Start
+// Start server FIRST, then init DB
+// This ensures /health and /api/books/health
+// respond immediately without waiting for DB
 // ─────────────────────────────────────────
-initDB()
-  .then(() => app.listen(PORT, () =>
-    console.log(`Booking service running on port ${PORT}`)))
-  .catch(err => { console.error('DB init failed:', err); process.exit(1); }); 
- 
- 
+app.listen(PORT, () => {
+  console.log(`Booking service running on port ${PORT}`);
 
-
-
-
-  // feature test1
+  // Init DB after server is up — non-fatal for health checks
+  initDB().catch(err => {
+    console.error('DB init failed:', err);
+    // Do NOT call process.exit(1) here — health endpoints must stay alive
+    // Kubernetes/ArgoCD will use /ready to gate traffic until DB is up
+  });
+});

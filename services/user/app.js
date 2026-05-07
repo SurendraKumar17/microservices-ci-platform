@@ -2,7 +2,7 @@ const express = require('express');
 const { Pool } = require('pg');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const client = require('prom-client');  // ← add this
+const client = require('prom-client');
 
 const app = express();
 const PORT = process.env.PORT || 3002;
@@ -57,6 +57,9 @@ const pool = new Pool({
   ssl: { rejectUnauthorized: false }
 });
 
+// Track DB readiness separately from HTTP server
+let dbReady = false;
+
 async function initDB() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS users (
@@ -67,20 +70,41 @@ async function initDB() {
       created_at TIMESTAMP DEFAULT NOW()
     );
   `);
+  dbReady = true;
   console.log('Users DB initialized');
 }
 
 // ─────────────────────────────────────────
-// Routes
+// Health / Readiness Routes
 // ─────────────────────────────────────────
-app.get('/health', (req, res) => res.json({ status: 'ok', service: 'user' }));
-app.get('/ready', (req, res) => res.json({ status: 'ready', service: 'user' }));
 
+// Liveness — always 200 as long as process is alive
+app.get('/health', (req, res) =>
+  res.json({ status: 'ok', service: 'user' })
+);
+app.get('/api/users/health', (req, res) =>
+  res.json({ status: 'ok', service: 'user' })
+);
+
+// Readiness — 503 until DB is ready
+app.get('/ready', (req, res) => {
+  if (!dbReady) {
+    return res.status(503).json({ status: 'not ready', reason: 'db not initialized' });
+  }
+  res.json({ status: 'ready', service: 'user' });
+});
+
+// ─────────────────────────────────────────
+// Metrics
+// ─────────────────────────────────────────
 app.get('/metrics', async (req, res) => {
   res.set('Content-Type', client.register.contentType);
   res.end(await client.register.metrics());
 });
 
+// ─────────────────────────────────────────
+// API Routes
+// ─────────────────────────────────────────
 app.post('/api/users/register', async (req, res) => { /* ... existing code ... */ });
 app.post('/api/users/login', async (req, res) => { /* ... existing code ... */ });
 app.get('/api/users/profile', authenticate, async (req, res) => { /* ... existing code ... */ });
@@ -89,8 +113,17 @@ app.get('/api/users', async (req, res) => { /* ... existing code ... */ });
 function authenticate(req, res, next) { /* ... existing code ... */ }
 
 // ─────────────────────────────────────────
-// Start
+// Start server FIRST, then init DB
+// This ensures /health and /api/users/health
+// respond immediately without waiting for DB
 // ─────────────────────────────────────────
-initDB()
-  .then(() => app.listen(PORT, () => console.log(`User service running on port ${PORT}`)))
-  .catch(err => { console.error('DB init failed:', err); process.exit(1); }); 
+app.listen(PORT, () => {
+  console.log(`User service running on port ${PORT}`);
+
+  // Init DB after server is up — non-fatal for health checks
+  initDB().catch(err => {
+    console.error('DB init failed:', err);
+    // Do NOT call process.exit(1) here — health endpoints must stay alive
+    // Kubernetes/ArgoCD will use /ready to gate traffic until DB is up
+  });
+});

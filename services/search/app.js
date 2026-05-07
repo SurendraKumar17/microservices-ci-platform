@@ -125,6 +125,7 @@ async function initDB() {
 // Routes
 // ─────────────────────────────────────────
 app.get('/health', (req, res) => res.json({ status: 'ok', service: 'search' }));
+app.get('/api/search/health', (req, res) => res.json({ status: 'ok', service: 'search' }));
 
 // ─────────────────────────────────────────
 // Generic search — destination card click
