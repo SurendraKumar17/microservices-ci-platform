@@ -1,7 +1,6 @@
-# =============================================================
-# modules/helm/main.tf
-# =============================================================
-
+# ─────────────────────────────────────────
+# AWS Load Balancer Controller
+# ─────────────────────────────────────────
 resource "helm_release" "aws_load_balancer_controller" {
   name       = "aws-load-balancer-controller"
   repository = "https://aws.github.io/eks-charts"
@@ -38,6 +37,9 @@ resource "helm_release" "aws_load_balancer_controller" {
   ]
 }
 
+# ─────────────────────────────────────────
+# EBS CSI Driver
+# ─────────────────────────────────────────
 resource "helm_release" "ebs_csi_driver" {
   name       = "aws-ebs-csi-driver"
   repository = "https://kubernetes-sigs.github.io/aws-ebs-csi-driver"
@@ -58,6 +60,9 @@ resource "helm_release" "ebs_csi_driver" {
   ]
 }
 
+# ─────────────────────────────────────────
+# Metrics Server
+# ─────────────────────────────────────────
 resource "helm_release" "metrics_server" {
   name       = "metrics-server"
   repository = "https://kubernetes-sigs.github.io/metrics-server/"
@@ -71,6 +76,9 @@ resource "helm_release" "metrics_server" {
   timeout         = 180
 }
 
+# ─────────────────────────────────────────
+# Cluster Autoscaler
+# ─────────────────────────────────────────
 resource "helm_release" "cluster_autoscaler" {
   name       = "cluster-autoscaler"
   repository = "https://kubernetes.github.io/autoscaler"
@@ -101,6 +109,9 @@ resource "helm_release" "cluster_autoscaler" {
   depends_on = [helm_release.metrics_server]
 }
 
+# ─────────────────────────────────────────
+# ArgoCD
+# ─────────────────────────────────────────
 resource "helm_release" "argocd" {
   name             = "argocd"
   repository       = "https://argoproj.github.io/argo-helm"
@@ -136,6 +147,9 @@ resource "helm_release" "argocd" {
   depends_on = [helm_release.aws_load_balancer_controller]
 }
 
+# ─────────────────────────────────────────
+# ArgoCD Ingress
+# ─────────────────────────────────────────
 resource "kubernetes_ingress_v1" "argocd" {
   metadata {
     name      = "argocd-ingress"
@@ -173,6 +187,9 @@ resource "kubernetes_ingress_v1" "argocd" {
   depends_on = [helm_release.argocd]
 }
 
+# ─────────────────────────────────────────
+# External Secrets
+# ─────────────────────────────────────────
 resource "helm_release" "external_secrets" {
   name             = "external-secrets"
   repository       = "https://charts.external-secrets.io"
@@ -196,6 +213,9 @@ resource "helm_release" "external_secrets" {
   depends_on = [helm_release.argocd]
 }
 
+# ─────────────────────────────────────────
+# Argo Rollouts
+# ─────────────────────────────────────────
 resource "helm_release" "argo_rollouts" {
   name             = "argo-rollouts"
   repository       = "https://argoproj.github.io/argo-helm"
@@ -215,7 +235,6 @@ resource "helm_release" "argo_rollouts" {
 # ─────────────────────────────────────────
 # Prometheus Stack
 # ─────────────────────────────────────────
-
 resource "helm_release" "prometheus_stack" {
   name             = "prometheus-stack"
   repository       = "https://prometheus-community.github.io/helm-charts"
@@ -288,10 +307,76 @@ resource "helm_release" "loki_stack" {
   create_namespace = true
   version          = "2.10.2"
 
-  atomic          = false    # ← change to false
+  atomic          = false
   cleanup_on_fail = true
-  wait            = false    # ← change to false
+  wait            = false
   timeout         = 600
 
   depends_on = [helm_release.prometheus_stack]
+}
+
+# ─────────────────────────────────────────────────────────────
+# PRE-DESTROY CLEANUP
+# Runs before any helm release is destroyed.
+# Deletes LBs, EIPs, CRDs and stuck namespaces so VPC can be
+# cleanly removed without DependencyViolation errors.
+# ─────────────────────────────────────────────────────────────
+resource "null_resource" "pre_destroy_cleanup" {
+  triggers = {
+    cluster_name = var.cluster_name
+    region       = var.region
+  }
+
+  provisioner "local-exec" {
+    when       = destroy
+    on_failure = continue
+    command    = <<-EOT
+      echo "==> Updating kubeconfig"
+      aws eks update-kubeconfig \
+        --region ${self.triggers.region} \
+        --name ${self.triggers.cluster_name}
+
+      echo "==> Deleting all LoadBalancer services (releases EIPs + ALBs)"
+      kubectl delete svc -A \
+        --field-selector spec.type=LoadBalancer \
+        --ignore-not-found || true
+
+      echo "==> Deleting ALB ingresses (triggers ALB deletion)"
+      kubectl delete ingress -A --all --ignore-not-found || true
+
+      echo "==> Waiting 90s for AWS to release EIPs and delete ALBs"
+      sleep 90
+
+      echo "==> Deleting ArgoCD CRDs"
+      kubectl delete crd \
+        applications.argoproj.io \
+        applicationsets.argoproj.io \
+        appprojects.argoproj.io \
+        analysisruns.argoproj.io \
+        analysistemplates.argoproj.io \
+        clusteranalysistemplates.argoproj.io \
+        experiments.argoproj.io \
+        rollouts.argoproj.io \
+        --ignore-not-found || true
+
+      echo "==> Deleting namespaces"
+      for ns in argocd monitoring external-secrets argo-rollouts; do
+        kubectl delete namespace $ns --ignore-not-found || true
+      done
+
+      echo "==> Waiting 30s for namespaces to terminate"
+      sleep 30
+
+      echo "==> Pre-destroy cleanup complete ✅"
+    EOT
+  }
+
+  depends_on = [
+    helm_release.argocd,
+    helm_release.aws_load_balancer_controller,
+    helm_release.prometheus_stack,
+    helm_release.external_secrets,
+    helm_release.argo_rollouts,
+    kubernetes_ingress_v1.argocd,
+  ]
 }
