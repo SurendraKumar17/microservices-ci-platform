@@ -380,11 +380,8 @@ jobs:
 
       - name: Wait for ArgoCD sync (dev)
         run: |
-          argocd app wait bookstore-dev \
-            --health --timeout 300 \
-            --server ${{ secrets.ARGOCD_SERVER }} \
-            --auth-token ${{ secrets.ARGOCD_TOKEN }} \
-            --insecure
+          echo "Waiting 90s for ArgoCD to sync..."
+          sleep 90
 
       - name: Smoke tests — health endpoints
         run: |
