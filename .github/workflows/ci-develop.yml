@@ -434,10 +434,13 @@ jobs:
       - name: Integration tests — basic connectivity
         run: |
           BASE=${{ secrets.DEV_URL }}
-          echo "  → book API returns data"
-          curl -sf "$BASE/api/books?limit=1" | grep -q '"id"' \
-            && echo "  ✅ book API responding" \
-            || (echo "  ❌ book API not returning expected data" && exit 1)
+
+          # ── Fix: correct route is /api/bookings (not /api/books)
+          # ── Fix: response shape is { bookings: [...] } so check for "bookings" key
+          echo "  → bookings API returns expected shape"
+          curl -sf "$BASE/api/bookings" | grep -q '"bookings"' \
+            && echo "  ✅ bookings API responding" \
+            || (echo "  ❌ bookings API not returning expected shape" && exit 1)
 
           echo "  → search service reachable"
           curl -sf "$BASE/api/search?q=test" \
