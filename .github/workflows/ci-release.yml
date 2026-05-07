@@ -206,7 +206,7 @@ jobs:
             -Dsonar.organization=surendrakumar17
             -Dsonar.sources=services
             -Dsonar.exclusions=**/node_modules/**,**/*.test.*,**/vendor/**
-            -Dsonar.branch.name=${{ github.ref_name }}
+          
 
   # ─────────────────────────────────────────────────────────────────
   # 4. BUILD & PUSH  [DEVOPS OWNS]
