@@ -39,6 +39,21 @@ module "rds" {
 }
 
 # ─────────────────────────────────────────
+# RDS — Staging (shares dev VPC + subnets)
+# Namespace: booking-staging
+# ─────────────────────────────────────────
+module "rds_staging" {
+  source     = "../../modules/rds"
+  depends_on = [module.vpc]
+
+  env        = "staging"
+  project    = "microservices"
+  vpc_id     = module.vpc.vpc_id
+  vpc_cidr   = module.vpc.vpc_cidr
+  subnet_ids = module.vpc.private_subnets
+}
+
+# ─────────────────────────────────────────
 # IAM
 # ─────────────────────────────────────────
 module "iam" {
@@ -156,6 +171,8 @@ output "region"                  { value = var.region }
 output "vpc_id"                  { value = module.vpc.vpc_id }
 output "alb_controller_role_arn" { value = module.iam.alb_controller_role_arn }
 output "argocd_role_arn"         { value = module.iam.argocd_role_arn }
+output "rds_staging_endpoint"   { value = module.rds_staging.db_host }
+output "rds_staging_secret_arn" { value = module.rds_staging.secret_arn }
 output "argocd_url" {
   description = "ArgoCD ALB URL — available ~2 mins after apply"
   value       = "http://${module.helm.argocd_hostname}"
