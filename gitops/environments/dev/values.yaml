@@ -12,11 +12,11 @@ book:
 search:
   replicas: 1
   maxReplicas: 4
-  tag: "dev-7a8b5d80"
+  tag: "dev-1af11a2a"
 user:
   replicas: 1
   maxReplicas: 4
-  tag: "dev-7a8b5d80"
+  tag: "dev-1af11a2a"
 postgres:
   host: dev-microservices-postgres.cg9mq6cuoriv.us-east-1.rds.amazonaws.com
   user: bookinguser
