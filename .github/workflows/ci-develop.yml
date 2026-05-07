@@ -435,10 +435,13 @@ jobs:
         run: |
           BASE=${{ secrets.DEV_URL }}
 
-          # ── Fix: correct route is /api/bookings (not /api/books)
-          # ── Fix: response shape is { bookings: [...] } so check for "bookings" key
+          # ── Debug: print actual response before asserting
+          echo "  → bookings API raw response:"
+          BOOKINGS_RESPONSE=$(curl -s --max-time 10 "$BASE/api/bookings")
+          echo "  $BOOKINGS_RESPONSE"
+
           echo "  → bookings API returns expected shape"
-          curl -sf "$BASE/api/bookings" | grep -q '"bookings"' \
+          echo "$BOOKINGS_RESPONSE" | grep -q '"bookings"' \
             && echo "  ✅ bookings API responding" \
             || (echo "  ❌ bookings API not returning expected shape" && exit 1)
 
