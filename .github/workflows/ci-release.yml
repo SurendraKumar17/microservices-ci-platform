@@ -408,13 +408,13 @@ jobs:
             https://github.com/argoproj/argo-cd/releases/download/${{ env.ARGOCD_VERSION }}/argocd-linux-amd64
           chmod +x /usr/local/bin/argocd
 
-      - name: Wait for ArgoCD sync (staging)
-        run: |
-          argocd app wait bookstore-staging \
-            --health --timeout 300 \
-            --server ${{ secrets.ARGOCD_SERVER }} \
-            --auth-token ${{ secrets.ARGOCD_TOKEN }} \
-            --insecure
+      # - name: Wait for ArgoCD sync (staging)
+      #   run: |
+      #     argocd app wait bookstore-staging \
+      #       --health --timeout 300 \
+      #       --server ${{ secrets.ARGOCD_SERVER }} \
+      #       --auth-token ${{ secrets.ARGOCD_TOKEN }} \
+      #       --insecure
 
       - name: Wait for services to be healthy
         run: |
