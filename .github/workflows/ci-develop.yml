@@ -384,6 +384,37 @@ jobs:
           echo "Waiting 90s for ArgoCD to sync..."
           sleep 90
 
+      # ── FIX: Wait for all services to be healthy before smoke tests ──
+      # Polls /health with retries instead of assuming they're up after ArgoCD sync.
+      # This handles slow DB init, pod restarts, or image pull delays gracefully.
+      - name: Wait for services to be healthy
+        run: |
+          BASE=${{ secrets.DEV_URL }}
+          wait_for() {
+            local URL=$1
+            local NAME=$2
+            local RETRIES=12      # 12 × 10s = 2 minutes max per service
+            local WAIT=10
+
+            echo "  Waiting for $NAME..."
+            for i in $(seq 1 $RETRIES); do
+              STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$URL" || true)
+              if [[ "$STATUS" == "200" ]]; then
+                echo "  ✅ $NAME is healthy ($STATUS)"
+                return 0
+              fi
+              echo "  ⏳ $NAME not ready yet ($STATUS) — attempt $i/$RETRIES, retrying in ${WAIT}s..."
+              sleep $WAIT
+            done
+            echo "  ❌ $NAME failed to become healthy after $((RETRIES * WAIT))s"
+            return 1
+          }
+
+          wait_for "$BASE/health"              "gateway/health"
+          wait_for "$BASE/api/books/health"    "book service"
+          wait_for "$BASE/api/users/health"    "user service"
+          wait_for "$BASE/api/search/health"   "search service"
+
       - name: Smoke tests — health endpoints
         run: |
           BASE=${{ secrets.DEV_URL }}
