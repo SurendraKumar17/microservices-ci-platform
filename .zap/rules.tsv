@@ -1,0 +1,74 @@
+# .zap/rules.tsv
+# ZAP baseline scan rule suppressions
+# Format: ruleId<TAB>action<TAB>reason
+#
+# Actions:
+#   IGNORE   - suppress entirely (false positive / accepted risk)
+#   WARN     - downgrade from FAIL to WARN
+#   FAIL     - keep as failing (default; listed here for explicitness)
+#
+# Docs: https://www.zaproxy.org/docs/docker/baseline-scan/
+#
+# To find rule IDs: run ZAP once without this file, capture the numeric
+# IDs from the report, then add suppressions below with justification.
+# ──────────────────────────────────────────────────────────────────────
+
+# ── Cookie flags ──────────────────────────────────────────────────────
+# SameSite=None is set intentionally on session cookie for cross-origin
+# frontend ↔ API gateway calls (staging uses different origins).
+10054	WARN	SameSite=None required by staging cross-origin setup
+
+# HttpOnly missing on non-sensitive UI preference cookie (no auth data).
+10010	WARN	Preference cookie carries no sensitive data
+
+# ── Security headers ──────────────────────────────────────────────────
+# CSP is enforced at the CDN layer (CloudFront); not set on origin.
+10038	IGNORE	CSP delegated to CDN layer — not set on origin server
+
+# Permissions-Policy not yet adopted across all services — tracked in
+# INFRA-412; accept risk until rollout complete.
+10063	WARN	Permissions-Policy rollout in progress (INFRA-412)
+
+# ── Information disclosure ─────────────────────────────────────────────
+# X-Powered-By removed in prod; still present in staging base image.
+10037	WARN	X-Powered-By present in staging image only — stripped in prod
+
+# Server header reveals Nginx version on staging; masked in prod.
+10036	WARN	Server version header present in staging only
+
+# ── CORS ──────────────────────────────────────────────────────────────
+# CORS wildcard on /api/search is intentional — public read-only endpoint.
+40040	IGNORE	/api/search is a public read-only endpoint — wildcard CORS accepted
+
+# ── Content-Type sniffing ──────────────────────────────────────────────
+# X-Content-Type-Options missing on /api/bookings binary attachments;
+# all HTML/JSON responses already have it. Tracked INFRA-398.
+10021	WARN	Missing on binary attachment endpoints only (INFRA-398)
+
+# ── Anti-CSRF ─────────────────────────────────────────────────────────
+# REST API uses Authorization header + CORS; no form-based POST.
+# CSRF token pattern does not apply to this API design.
+20012	IGNORE	API uses Authorization header + CORS; not form-POST — CSRF N/A
+
+# ── Redirect ──────────────────────────────────────────────────────────
+# HTTP→HTTPS redirect on port 80 triggers open-redirect false positive.
+30000	IGNORE	HTTP→HTTPS redirect is intentional and validated
+
+# ── Passive scan ──────────────────────────────────────────────────────
+# Timestamp disclosure (e.g. Last-Modified) on static assets is expected.
+10096	IGNORE	Timestamp on static assets is intentional cache-busting
+
+# ── PII / private IP ──────────────────────────────────────────────────
+# Internal RFC-1918 addresses appear in /health JSON payload (pod IPs).
+# This endpoint is not publicly accessible in production.
+2	WARN	Internal IP in /health is behind auth in prod; staging is open
+
+# ──────────────────────────────────────────────────────────────────────
+# Rules kept at FAIL (default — no entry needed, listed for audit trail)
+# ──────────────────────────────────────────────────────────────────────
+# 40018  SQL injection
+# 40012  XSS reflected
+# 40014  XSS persistent
+# 90022  Application Error Disclosure
+# 10202  Absence of Anti-CSRF Tokens (HTML forms only)
+# 10105  Weak Authentication Method
