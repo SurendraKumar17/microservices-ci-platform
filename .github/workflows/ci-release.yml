@@ -495,8 +495,7 @@ jobs:
         env:
           BASE_URL: ${{ secrets.STAGING_URL }}
         run: |
-          npx playwright test ../../tests/e2e --reporter=html
-
+          npx playwright test tests/e2e --reporter=html
       - name: Upload Playwright report
         if: always()
         uses: actions/upload-artifact@v4
@@ -541,7 +540,6 @@ jobs:
           name: k6-staging-reports
           path: services/frontend/reports
           if-no-files-found: ignore
-
 
       # ── OWASP ZAP DAST  [DEVOPS OWNS] ───────────────────────────
       - name: OWASP ZAP — DAST baseline scan
