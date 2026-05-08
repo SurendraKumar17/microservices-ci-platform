@@ -506,8 +506,7 @@ jobs:
 
       # ── PERFORMANCE TESTS  [DEVOPS OWNS] ────────────────────────
       - name: Install Node dependencies
-        run: |
-          npm install
+        run: npm install
 
       - name: Install k6
         uses: grafana/setup-k6-action@v1
