@@ -15,7 +15,6 @@ spec:
       valueFiles:
         - values.yaml
         - ../../gitops/environments/dev/values.yaml
-  destination:
     server: https://kubernetes.default.svc
     namespace: booking-dev
   syncPolicy:
@@ -102,7 +101,7 @@ spec:
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: booking-infra-dev
+  name: cluster-infra
   namespace: argocd
   finalizers:
     - resources-finalizer.argocd.argoproj.io
@@ -110,22 +109,15 @@ spec:
   project: default
   source:
     repoURL: https://github.com/SurendraKumar17/microservices-gitops-platform
-    targetRevision: develop
-    path: gitops/environments/dev
+    targetRevision: head
+    path: gitops/cluster-wide
   destination:
     server: https://kubernetes.default.svc
-    namespace: booking-dev
+    namespace: argocd
   syncPolicy:
     automated:
       prune: true
       selfHeal: true
-    retry:
-      limit: 5
-      backoff:
-        duration: 5s
-        factor: 2
-        maxDuration: 3m
     syncOptions:
       - CreateNamespace=true
       - RespectIgnoreDifferences=true
-    
