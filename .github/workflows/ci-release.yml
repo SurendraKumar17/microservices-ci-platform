@@ -506,18 +506,21 @@ jobs:
 
       # ── PERFORMANCE TESTS  [DEVOPS OWNS] ────────────────────────
       - name: Install k6
-        working-directory: services/frontend
         run: |
-          npm install
+          sudo apt-get update
+          sudo apt-get install -y gnupg curl
+          curl -s https://dl.k6.io/key.gpg | sudo tee /etc/apt/trusted.gpg.d/k6.gpg > /dev/null
+          echo "deb https://dl.k6.io/deb stable main" | sudo tee /etc/apt/sources.list.d/k6.list
+          sudo apt-get update
+          sudo apt-get install -y k6
 
       - name: Performance tests (k6) — smoke
-        working-directory: services/frontend
         env:
           BASE_URL: ${{ secrets.STAGING_URL }}
         run: |
           mkdir -p reports
           
-          k6 run ../../tests/performance/staging-smoke.js \
+          k6 run tests/performance/staging-smoke.js \
             --env BASE_URL=$BASE_URL \
             --out json=reports/k6-smoke.json \
             --summary-trend-stats="avg,p(95),p(99)"
