@@ -485,11 +485,13 @@ jobs:
 
       # ── E2E TESTS  [SHARED] ──────────────────────────────────────
       - name: Install Playwright + browser deps
+        working-directory: services/frontend
         run: |
           npm install
           npx playwright install --with-deps chromium firefox webkit
 
       - name: E2E tests (Playwright)
+        working-directory: services/frontend
         env:
           BASE_URL: ${{ secrets.STAGING_URL }}
         run: |
