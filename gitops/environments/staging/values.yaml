@@ -1,31 +1,25 @@
 global:
   registry: 635457411372.dkr.ecr.us-east-1.amazonaws.com
   env: staging
-
 frontend:
   replicas: 1
   maxReplicas: 4
   tag: "latest-staging"
-
 book:
   replicas: 1
   maxReplicas: 4
-  tag: "latest-staging"
-
+  tag: "staging-82c83c89"
 search:
   replicas: 1
   maxReplicas: 4
   tag: "latest-staging"
-
 user:
   replicas: 1
   maxReplicas: 4
   tag: "latest-staging"
-
 postgres:
   host: staging-microservices-postgres.cg9mq6cuoriv.us-east-1.rds.amazonaws.com
   user: bookinguser
-
 ingress:
   enabled: true
   className: alb
