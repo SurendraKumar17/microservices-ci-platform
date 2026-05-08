@@ -543,8 +543,9 @@ jobs:
         with:
           target: ${{ secrets.STAGING_URL }}
           rules_file_name: .zap/rules.tsv
-          cmd_options: '-a -j'
+          cmd_options: '-a'
           fail_action: warn
+          issue_title: ''              # ← disables issue creation
 
       - name: Upload ZAP report
         if: always()
