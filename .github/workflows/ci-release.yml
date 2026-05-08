@@ -457,24 +457,30 @@ jobs:
           check "$BASE/api/users/health"
           check "$BASE/api/search/health"
 
-      # ── INTEGRATION TESTS  [SHARED] ──────────────────────────────
+    # ── INTEGRATION TESTS  [SHARED] ──────────────────────────────
       - name: Install Python test dependencies
         run: pip install pytest requests --quiet
 
       - name: Integration tests
+        env:
+          BASE_URL: ${{ secrets.STAGING_URL }}
         run: |
-          BASE=${{ secrets.STAGING_URL }}
           echo "  → bookings API raw response:"
-          BOOKINGS_RESPONSE=$(curl -s --max-time 10 "$BASE/api/bookings")
+          BOOKINGS_RESPONSE=$(curl -s --max-time 10 "$BASE_URL/api/bookings")
           echo "  $BOOKINGS_RESPONSE"
+
           echo "$BOOKINGS_RESPONSE" | grep -q '"bookings"' \
             && echo "  ✅ bookings API responding" \
             || (echo "  ❌ bookings API not returning expected shape" && exit 1)
+
           echo "  → search service reachable"
-          curl -sf "$BASE/api/search?q=test" \
+
+          curl -sf "$BASE_URL/api/search?q=test" \
             && echo "  ✅ search API reachable" \
             || (echo "  ❌ search API not reachable" && exit 1)
-          pytest tests/integration/ --base-url=$BASE -v --tb=short \
+
+          pytest tests/integration/ \
+            -v --tb=short \
             --junit-xml=reports/integration-staging.xml
 
       # ── E2E TESTS  [SHARED] ──────────────────────────────────────
