@@ -486,7 +486,7 @@ jobs:
       # ── E2E TESTS  [SHARED] ──────────────────────────────────────
       - name: Install Playwright + browser deps
         run: |
-          npm ci
+          npm install
           npx playwright install --with-deps chromium firefox webkit
 
       - name: E2E tests (Playwright)
