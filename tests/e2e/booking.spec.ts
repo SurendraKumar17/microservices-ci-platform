@@ -4,7 +4,6 @@
  *
  * Run:
  *   npx playwright test \
- *     --project=chromium --project=firefox \
  *     --reporter=html --output=reports/playwright
  *
  * Env:

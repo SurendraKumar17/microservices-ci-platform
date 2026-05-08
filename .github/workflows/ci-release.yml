@@ -490,11 +490,14 @@ jobs:
           npx playwright install --with-deps chromium firefox webkit
 
       - name: E2E tests (Playwright)
+        env:
+          BASE_URL: ${{ secrets.STAGING_URL }}
         run: |
+          mkdir -p reports/playwright
           npx playwright test \
-            --project=chromium --project=firefox \
-            --reporter=html --output=reports/playwright
-
+            --reporter=html \
+            --output reports/playwright
+            
       - name: Upload Playwright report
         if: always()
         uses: actions/upload-artifact@v4
