@@ -7,7 +7,6 @@ on:
     paths:
       - 'services/**'
       - 'gitops/**'
-      - '.github/workflows/**'
 
   pull_request:
     branches:
@@ -488,14 +487,15 @@ jobs:
         working-directory: services/frontend
         run: |
           npm install
-          npx playwright install --with-deps chromium firefox webkit
+          npx playwright install --with-deps
 
       - name: E2E tests (Playwright)
         working-directory: services/frontend
         env:
           BASE_URL: ${{ secrets.STAGING_URL }}
         run: |
-          npx playwright test tests/e2e --reporter=html
+          npx playwright test --reporter=html --output=playwright-report
+
       - name: Upload Playwright report
         if: always()
         uses: actions/upload-artifact@v4
