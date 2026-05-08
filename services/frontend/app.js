@@ -63,7 +63,7 @@ app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-// ─────────────────────────────────────────
+// ───────────────────────────────────────
 // Start
-// ─────────────────────────────────────────
+// ───────────────────────────────────────
 app.listen(PORT, () => console.log(`Frontend running on port ${PORT}`));

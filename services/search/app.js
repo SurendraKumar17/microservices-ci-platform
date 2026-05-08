@@ -225,6 +225,3 @@ initDB()
   .then(() => app.listen(PORT, () =>
     console.log(`Search service running on port ${PORT}`)))
   .catch(err => { console.error(err); process.exit(1); });
-  
-
-  //updated

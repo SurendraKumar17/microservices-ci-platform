@@ -211,11 +211,11 @@ app.patch('/api/bookings/:id/cancel', async (req, res) => {
   }
 });
 
-// ─────────────────────────────────────────
+// ───────────────────────────────────────
 // Start server FIRST, then init DB
 // This ensures /health and /api/books/health
 // respond immediately without waiting for DB
-// ─────────────────────────────────────────
+// ───────────────────────────────────────
 app.listen(PORT, () => {
   console.log(`Booking service running on port ${PORT}`);
 

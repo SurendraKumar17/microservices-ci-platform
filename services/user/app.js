@@ -112,11 +112,11 @@ app.get('/api/users', async (req, res) => { /* ... existing code ... */ });
 
 function authenticate(req, res, next) { /* ... existing code ... */ }
 
-// ─────────────────────────────────────────
+// ────────────────────────────────────────
 // Start server FIRST, then init DB
 // This ensures /health and /api/users/health
 // respond immediately without waiting for DB
-// ─────────────────────────────────────────
+// ────────────────────────────────────────
 app.listen(PORT, () => {
   console.log(`User service running on port ${PORT}`);
 
