@@ -526,7 +526,6 @@ jobs:
             --summary-trend-stats="avg,p(95),p(99)"
 
       - name: Performance tests (k6) — load
-        working-directory: services/frontend
         env:
           BASE_URL: ${{ secrets.STAGING_URL }}
         run: |
