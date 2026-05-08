@@ -532,7 +532,7 @@ jobs:
         run: |
           mkdir -p reports
           
-          k6 run ../../tests/performance/staging-load.js \
+          k6 run tests/performance/staging-load.js \
             --env BASE_URL=$BASE_URL \
             --out json=reports/k6-load.json
 
@@ -541,7 +541,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: k6-staging-reports
-          path: services/frontend/reports
+          path: reports
           if-no-files-found: ignore
 
       # ── OWASP ZAP DAST  [DEVOPS OWNS] ───────────────────────────
