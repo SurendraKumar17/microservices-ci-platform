@@ -108,7 +108,7 @@ spec:
   project: default
   source:
     repoURL: https://github.com/SurendraKumar17/microservices-gitops-platform
-    targetRevision: develop   # ← FIX: was 'main', secret-store.yaml not on main yet
+    targetRevision: release/1.0.0   
     path: gitops/cluster-wide
   destination:
     server: https://kubernetes.default.svc
