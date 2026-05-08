@@ -109,7 +109,6 @@ spec:
   project: default
   source:
     repoURL: https://github.com/SurendraKumar17/microservices-gitops-platform
-    targetRevision: head
     path: gitops/cluster-wide
   destination:
     server: https://kubernetes.default.svc
