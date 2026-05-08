@@ -95,8 +95,9 @@ function genRef() {
 // ─────────────────────────────────────────
 
 // Liveness — always 200 as long as process is alive
-app.get('/health',           (req, res) => res.json({ status: 'ok', service: 'booking' }));
-app.get('/api/books/health', (req, res) => res.json({ status: 'ok', service: 'booking' }));
+app.get('/health',              (req, res) => res.json({ status: 'ok', service: 'booking' }));
+app.get('/api/books/health',    (req, res) => res.json({ status: 'ok', service: 'booking' }));
+app.get('/api/bookings/health', (req, res) => res.json({ status: 'ok', service: 'booking' })); // ← added
 
 // Readiness — 503 until DB is ready
 app.get('/ready', (req, res) => {
