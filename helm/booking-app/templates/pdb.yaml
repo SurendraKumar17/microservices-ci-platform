@@ -7,7 +7,7 @@ metadata:
   labels:
     {{- include "booking.labels" $ | nindent 4 }}
 spec:
-  minAvailable: 1       # always keep at least 1 pod up during node drains
+  maxUnavailable: {{ $.Values.pdb.maxUnavailable }}
   selector:
     matchLabels:
       app: {{ $service }}
