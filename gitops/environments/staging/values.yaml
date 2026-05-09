@@ -4,19 +4,19 @@ global:
 frontend:
   replicas: 1
   maxReplicas: 4
-  tag: "staging-f5156cb3"
+  tag: "staging-688341b4"
 book:
   replicas: 1
   maxReplicas: 4
-  tag: "staging-f5156cb3"
+  tag: "staging-688341b4"
 search:
   replicas: 1
   maxReplicas: 4
-  tag: "staging-f5156cb3"
+  tag: "staging-688341b4"
 user:
   replicas: 1
   maxReplicas: 4
-  tag: "staging-f5156cb3"
+  tag: "staging-688341b4"
 postgres:
   host: staging-microservices-postgres.cg9mq6cuoriv.us-east-1.rds.amazonaws.com
   user: bookinguser
