@@ -521,15 +521,13 @@ jobs:
             --summary-trend-stats="avg,p(95),p(99)"
 
       - name: Performance tests (k6) — load
+        env:
+          BASE_URL: ${{ secrets.STAGING_URL }}
         run: |
-          echo "✅ Load test passed (stubbed)"
-        # env:
-        #   BASE_URL: ${{ secrets.STAGING_URL }}
-        # run: |
-        #   mkdir -p reports
-        #   k6 run tests/performance/staging-load.js \
-        #     --env BASE_URL=$BASE_URL \
-        #     --out json=reports/k6-load.json
+          mkdir -p reports
+          k6 run tests/performance/staging-load.js \
+            --env BASE_URL=$BASE_URL \
+            --out json=reports/k6-load.json
 
       - name: Upload k6 reports
         if: always()
