@@ -545,7 +545,8 @@ jobs:
           rules_file_name: .zap/rules.tsv
           cmd_options: '-a'
           fail_action: warn
-          allow_issue_writing: false               # ← disables issue creation
+          allow_issue_writing: false  
+          artifact_name: zap-baseline-report   
 
       - name: Upload ZAP report
         if: always()
@@ -578,9 +579,10 @@ jobs:
     needs: [post-deploy-staging]
     if: |
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
-      needs.post-deploy-staging.result == 'success'
+       needs.post-deploy-staging.result == 'success'
     environment:
       name: staging
+    timeout-minutes: 1440        #auto-fail after 24h, don't hang forever
     steps:
       - name: QA gate passed
         run: |
