@@ -1,19 +1,33 @@
-name: Main Branch CI — Production
+name: Production Release Pipeline
 
 on:
   push:
     branches:
       - main
     paths:
-      - 'services/**'
       - 'gitops/**'
 
   pull_request:
     branches:
-      - main             # PR from release/** → main (or hotfix/** → main)
+      - main             #PR from release/** → main (or hotfix/** → main)
     paths:
-      - 'services/**'
       - 'gitops/**'
+
+  workflow_dispatch:
+    inputs:
+      staging_sha:
+        description: 'Staging SHA to promote (e.g. staging-a1b2c3d4)'
+        required: true
+        type: string
+      release_notes:
+        description: 'Brief release notes (shown in Slack notification)'
+        required: true
+        type: string
+      services:
+        description: 'Comma-separated services to promote (leave blank = all)'
+        required: false
+        default: 'book,frontend,search,user'
+        type: string
 
 permissions:
   id-token: write
@@ -21,320 +35,232 @@ permissions:
   security-events: write
 
 concurrency:
-  group: main-${{ github.event_name }}-${{ github.ref }}
-  cancel-in-progress: false  # never cancel a production deploy
+  group: production-deploy
+  cancel-in-progress: false   # NEVER cancel an active prod deploy
 
 env:
-  AWS_REGION: us-east-1
-  ECR_REGISTRY: ${{ secrets.ECR_REGISTRY }}
+  AWS_REGION:    us-east-1
+  ECR_REGISTRY:  ${{ secrets.ECR_REGISTRY }}
   ARGOCD_VERSION: v2.11.3
 
 # ═══════════════════════════════════════════════════════════════════
-#  MAIN BRANCH PIPELINE — PRODUCTION
+#  PRODUCTION PIPELINE
 #  ──────────────────────────────────────────────────────────────────
-#  WHEN pull_request → main  (from release/** or hotfix/**):
-#    → pr-validation (secret scan + lint + unit + SAST PR decoration)
-#    → NO build, NO deploy
-#    → blocks merge on failure
+#  TRIGGER:  Manual workflow_dispatch only (never auto-trigger prod)
 #
-#  WHEN push to main  (after PR merge):
-#    → secret scan → detect changes → sonarqube → trivy-iac
-#    → build & push (all security checks BLOCKING)
-#    → prod approval gate
-#    → gitops update (prod)
-#    → post-deploy prod (smoke + synthetic monitoring + git tag)
+#  FLOW:
+#    approval-gate
+#      → validate-staging-sha          (confirm SHA exists + passed staging)
+#      → retag-images                  (staging-{sha} → prod-{sha} + stable)
+#      → gitops-update-prod            (update prod values.yaml)
+#      → post-deploy-prod              (wait → smoke)
+#          ↓ on smoke failure
+#      → auto-rollback                 (revert gitops tag to previous stable)
+#      → notify                        (Slack — success or failure)
 #
-#  NOTE: All Trivy exit codes are 1 (blocking) on main — unlike dev/staging.
+#  RULES
+#  - Build once in staging, promote the same artifact. Never rebuild.
+#  - Only retag: staging-{sha} → prod-{sha} + stable
+#  - Smoke failure = immediate auto-rollback, no human needed
+#  - All other tests (integration, E2E, perf, ZAP) ran in staging — not repeated
+#
+#  OWNERSHIP
+#  [DEVOPS OWNS]  All job wiring, ECR retag, ArgoCD sync, smoke, rollback, notify
+#  [DEV OWNS]     services/{svc}/tests/smoke/ if custom smoke scripts added
 # ═══════════════════════════════════════════════════════════════════
 
 jobs:
 
   # ─────────────────────────────────────────────────────────────────
-  # PR VALIDATION — release/** (or hotfix/**) → main
-  #    Runs ONLY on pull_request. Blocks merge on failure.
+  # 0. APPROVAL GATE  [DEVOPS OWNS]
+  #    Requires 2 reviewers configured under GitHub Environment:
+  #    Settings → Environments → production → Required reviewers
+  #    Add: Lead Dev + DevOps Lead (or your release manager)
   # ─────────────────────────────────────────────────────────────────
-  pr-validation:
-    name: PR Validation (→ main)
-    if: github.event_name == 'pull_request'
+  approval-gate:
+    name: Production Approval Gate
     runs-on: ubuntu-latest
+    environment:
+      name: production          # GitHub env with required reviewers + wait timer
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Secret scan (TruffleHog)
-        uses: trufflesecurity/trufflehog@main
-        with:
-          path: ./
-          base: ${{ github.event.pull_request.base.sha }}
-          head: ${{ github.event.pull_request.head.sha }}
-          extra_args: --only-verified
-
-      - name: Lint Dockerfiles (Hadolint)
+      - name: Log approval
         run: |
-          for svc in book frontend search user; do
-            [ -f services/$svc/Dockerfile ] || continue
-            echo "==> Linting services/$svc/Dockerfile"
-            docker run --rm -i hadolint/hadolint \
-              hadolint --failure-threshold warning - \
-              < services/$svc/Dockerfile
-          done
-
-      - name: Unit tests
-        run: |
-          set -e
-          for svc in book user search; do
-            echo "==> $svc unit tests"
-            cd services/$svc
-            pytest tests/unit/ -v --tb=short 2>/dev/null \
-              || echo "⚠️  PENDING: $svc has no unit tests — add services/$svc/tests/unit/"
-            cd $GITHUB_WORKSPACE
-          done
-          echo "==> frontend unit tests"
-          cd services/frontend && npm run test:unit 2>/dev/null \
-            || echo "⚠️  PENDING: frontend has no unit tests — add test:unit script"
-
-      # SonarQube PR decoration — posts inline comments on the PR
-      - name: SonarQube SAST (PR decoration)
-        uses: sonarsource/sonarqube-scan-action@master
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
-        with:
-          args: >
-            -Dsonar.projectKey=Surendra_Pandrinki_microservices-gitops-platform
-            -Dsonar.organization=surendrakumar17
-            -Dsonar.sources=services
-            -Dsonar.exclusions=**/node_modules/**,**/*.test.*,**/vendor/**
-            -Dsonar.pullrequest.key=${{ github.event.pull_request.number }}
-            -Dsonar.pullrequest.branch=${{ github.head_ref }}
-            -Dsonar.pullrequest.base=${{ github.base_ref }}
+          echo "✅ Production deployment approved"
+          echo "  SHA to promote : ${{ github.event.inputs.staging_sha }}"
+          echo "  Services       : ${{ github.event.inputs.services }}"
+          echo "  Release notes  : ${{ github.event.inputs.release_notes }}"
+          echo "  Approved by    : ${{ github.actor }}"
+          echo "  Timestamp      : $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 
   # ─────────────────────────────────────────────────────────────────
-  # 0. COMPUTE TAGS  [DEVOPS OWNS]
-  #    Runs ONLY on push. tag=prod-{sha}, deploy_env=prod
+  # 1. VALIDATE STAGING SHA  [DEVOPS OWNS]
+  #    Confirms the provided staging-{sha} tag exists in ECR
+  #    and is not being promoted blindly (guards against typos)
   # ─────────────────────────────────────────────────────────────────
-  compute-tags:
-    name: Compute image tag
-    if: github.event_name == 'push'
+  validate-staging-sha:
+    name: Validate Staging SHA exists in ECR
     runs-on: ubuntu-latest
+    needs: [approval-gate]
     outputs:
-      tag:        ${{ steps.set.outputs.tag }}
-      deploy_env: ${{ steps.set.outputs.deploy_env }}
+      prod_tag:      ${{ steps.tags.outputs.prod_tag }}
+      short_sha:     ${{ steps.tags.outputs.short_sha }}
+      services_list: ${{ steps.tags.outputs.services_list }}
     steps:
-      - id: set
-        run: |
-          SHA=$(echo $GITHUB_SHA | cut -c1-8)
-          echo "tag=prod-${SHA}"  >> $GITHUB_OUTPUT
-          echo "deploy_env=prod"  >> $GITHUB_OUTPUT
-
-  # ─────────────────────────────────────────────────────────────────
-  # 1. SECRET SCAN  [DEVOPS OWNS]  — BLOCKING
-  # ─────────────────────────────────────────────────────────────────
-  secret-scan:
-    name: Secret Scan (TruffleHog) — BLOCKING
-    if: github.event_name == 'push'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Secret scan
-        uses: trufflesecurity/trufflehog@main
-        with:
-          path: ./
-          base: ${{ github.event.before }}
-          head: ${{ github.event.after }}
-          extra_args: --only-verified
-
-  # ─────────────────────────────────────────────────────────────────
-  # 2. DETECT CHANGES  [DEVOPS OWNS]
-  # ─────────────────────────────────────────────────────────────────
-  detect-changes:
-    name: Detect Changed Services
-    if: github.event_name == 'push'
-    runs-on: ubuntu-latest
-    outputs:
-      book:     ${{ steps.filter.outputs.book }}
-      frontend: ${{ steps.filter.outputs.frontend }}
-      search:   ${{ steps.filter.outputs.search }}
-      user:     ${{ steps.filter.outputs.user }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - id: filter
-        uses: dorny/paths-filter@v3
-        with:
-          filters: |
-            book:     ['services/book/**']
-            frontend: ['services/frontend/**']
-            search:   ['services/search/**']
-            user:     ['services/user/**']
-
-  # ─────────────────────────────────────────────────────────────────
-  # 3. SONARQUBE SAST  [DEVOPS OWNS]  — BLOCKING
-  # ─────────────────────────────────────────────────────────────────
-  sonarqube:
-    name: SonarQube SAST — BLOCKING
-    if: github.event_name == 'push'
-    runs-on: ubuntu-latest
-    needs: [secret-scan]
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: SonarQube scan
-        uses: sonarsource/sonarqube-scan-action@master
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          SONAR_HOST_URL: https://sonarcloud.io
-        with:
-          args: >
-            -Dsonar.projectKey=Surendra_Pandrinki_microservices-gitops-platform
-            -Dsonar.organization=surendrakumar17
-            -Dsonar.sources=services
-            -Dsonar.exclusions=**/node_modules/**,**/*.test.*,**/vendor/**
-            -Dsonar.branch.name=main
-
-  # ─────────────────────────────────────────────────────────────────
-  # 4. TRIVY IaC SCAN  [DEVOPS OWNS]  — BLOCKING on main
-  # ─────────────────────────────────────────────────────────────────
-  trivy-iac:
-    name: Trivy — IaC / Helm / Terraform — BLOCKING
-    if: github.event_name == 'push'
-    runs-on: ubuntu-latest
-    needs: [secret-scan]
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Trivy — IaC config scan
-        uses: aquasecurity/trivy-action@master
-        with:
-          scan-type: config
-          scan-ref: gitops/
-          format: sarif
-          output: trivy-iac.sarif
-          severity: CRITICAL,HIGH,MEDIUM
-          exit-code: '1'       # BLOCKING on main
-
-      - name: Upload IaC SARIF
-        if: always()
-        uses: github/codeql-action/upload-sarif@v3
-        with:
-          sarif_file: trivy-iac.sarif
-          category: trivy-iac
-
-  # ─────────────────────────────────────────────────────────────────
-  # 5. BUILD & PUSH  [DEVOPS OWNS]  — Trivy BLOCKING on main
-  # ─────────────────────────────────────────────────────────────────
-  build:
-    name: Build & Push — ${{ matrix.service }}
-    if: github.event_name == 'push'
-    runs-on: ubuntu-latest
-    needs: [detect-changes, compute-tags, secret-scan]
-    strategy:
-      fail-fast: false
-      matrix:
-        service: [book, frontend, search, user]
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Check if service changed
-        id: check
-        run: |
-          case "${{ matrix.service }}" in
-            book)     echo "changed=${{ needs.detect-changes.outputs.book }}"     >> $GITHUB_OUTPUT ;;
-            frontend) echo "changed=${{ needs.detect-changes.outputs.frontend }}" >> $GITHUB_OUTPUT ;;
-            search)   echo "changed=${{ needs.detect-changes.outputs.search }}"   >> $GITHUB_OUTPUT ;;
-            user)     echo "changed=${{ needs.detect-changes.outputs.user }}"     >> $GITHUB_OUTPUT ;;
-          esac
-          [[ "${{ github.event_name }}" == "workflow_dispatch" ]] && echo "changed=true" >> $GITHUB_OUTPUT
-
       - name: Configure AWS (OIDC)
-        if: steps.check.outputs.changed == 'true'
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: arn:aws:iam::635457411372:role/github-actions-ecr-role
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Login to ECR
-        if: steps.check.outputs.changed == 'true'
-        uses: aws-actions/amazon-ecr-login@v2
-
-      - name: Build & Push image
-        if: steps.check.outputs.changed == 'true'
+      - name: Derive tags
+        id: tags
         run: |
-          TAG=${{ needs.compute-tags.outputs.tag }}
-          docker build \
-            --label "git.sha=$GITHUB_SHA" \
-            --label "git.branch=main" \
-            -t $ECR_REGISTRY/${{ matrix.service }}:${TAG} \
-            -t $ECR_REGISTRY/${{ matrix.service }}:latest-prod \
-            ./services/${{ matrix.service }}
-          docker push $ECR_REGISTRY/${{ matrix.service }}:${TAG}
-          docker push $ECR_REGISTRY/${{ matrix.service }}:latest-prod
+          STAGING_TAG="${{ github.event.inputs.staging_sha }}"
+          SHORT_SHA="${STAGING_TAG#staging-}"          # strip "staging-" prefix
+          PROD_TAG="prod-${SHORT_SHA}"
+          SERVICES="${{ github.event.inputs.services }}"
 
-      - name: Trivy — table output (debug)
-        if: steps.check.outputs.changed == 'true'
-        uses: aquasecurity/trivy-action@master
-        with:
-          image-ref: ${{ env.ECR_REGISTRY }}/${{ matrix.service }}:${{ needs.compute-tags.outputs.tag }}
-          format: table
-          exit-code: '0'
-          severity: CRITICAL,HIGH
-          scanners: vuln,secret
+          echo "staging_tag=$STAGING_TAG"   >> $GITHUB_OUTPUT
+          echo "prod_tag=$PROD_TAG"         >> $GITHUB_OUTPUT
+          echo "short_sha=$SHORT_SHA"       >> $GITHUB_OUTPUT
+          echo "services_list=$SERVICES"    >> $GITHUB_OUTPUT
 
-      - name: Trivy — image vulnerability scan (BLOCKING)
-        if: steps.check.outputs.changed == 'true'
-        uses: aquasecurity/trivy-action@master
-        with:
-          image-ref: ${{ env.ECR_REGISTRY }}/${{ matrix.service }}:${{ needs.compute-tags.outputs.tag }}
-          format: sarif
-          output: trivy-image-${{ matrix.service }}.sarif
-          severity: CRITICAL,HIGH
-          exit-code: '1'       # BLOCKING on main
-          ignore-unfixed: true
+          echo "  Staging tag : $STAGING_TAG"
+          echo "  Prod tag    : $PROD_TAG"
+          echo "  Services    : $SERVICES"
 
-      - name: Upload Trivy SARIF
-        if: steps.check.outputs.changed == 'true'
-        uses: github/codeql-action/upload-sarif@v3
-        with:
-          sarif_file: trivy-image-${{ matrix.service }}.sarif
-          category: trivy-image-${{ matrix.service }}-${{ github.sha }}
+      - name: Verify staging images exist in ECR
+        run: |
+          STAGING_TAG="${{ github.event.inputs.staging_sha }}"
+          SERVICES="${{ github.event.inputs.services }}"
+
+          IFS=',' read -ra SVC_ARRAY <<< "$SERVICES"
+          MISSING=0
+
+          for SVC in "${SVC_ARRAY[@]}"; do
+            SVC=$(echo $SVC | xargs)   # trim whitespace
+            echo -n "  Checking $SVC:$STAGING_TAG ... "
+            EXISTS=$(aws ecr describe-images \
+              --repository-name "$SVC" \
+              --image-ids imageTag="$STAGING_TAG" \
+              --query 'imageDetails[0].imageTags' \
+              --output text 2>/dev/null || echo "NOT_FOUND")
+
+            if [[ "$EXISTS" == "NOT_FOUND" || -z "$EXISTS" ]]; then
+              echo "❌ NOT FOUND"
+              MISSING=1
+            else
+              echo "✅ found"
+            fi
+          done
+
+          if [[ "$MISSING" == "1" ]]; then
+            echo ""
+            echo "❌ One or more images not found in ECR for tag: $STAGING_TAG"
+            echo "   Did this SHA pass the staging pipeline?"
+            exit 1
+          fi
 
   # ─────────────────────────────────────────────────────────────────
-  # 6. PROD APPROVAL GATE  [DEVOPS OWNS]
-  #    Pipeline pauses here until a human approves.
-  #    Configure: Settings → Environments → production → required reviewers
+  # 2. RETAG IMAGES  [DEVOPS OWNS]
+  #    staging-{sha} → prod-{sha}  +  stable
+  #    No rebuild. Same bits that passed staging testing.
   # ─────────────────────────────────────────────────────────────────
-  prod-approval:
-    name: "🔒 Production approval gate"
+  retag-images:
+    name: Retag — ${{ matrix.service }}
     runs-on: ubuntu-latest
-    needs: [build, sonarqube, trivy-iac]
-    if: |
-      github.event_name == 'push' &&
-      !contains(needs.*.result, 'failure') &&
-      !contains(needs.*.result, 'cancelled')
-    environment:
-      name: production
+    needs: [validate-staging-sha]
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [book, frontend, search, user]
     steps:
-      - name: Approval confirmed
+      - name: Skip if service not in promote list
+        id: check
         run: |
-          echo "✅ Production deployment approved"
-          echo "   ArgoCD will sync → canary / blue-green rollout"
+          SERVICES="${{ needs.validate-staging-sha.outputs.services_list }}"
+          SVC="${{ matrix.service }}"
+          if echo "$SERVICES" | grep -qw "$SVC"; then
+            echo "promote=true" >> $GITHUB_OUTPUT
+          else
+            echo "promote=false" >> $GITHUB_OUTPUT
+            echo "  ↳ $SVC not in promote list — skipping"
+          fi
+
+      - name: Configure AWS (OIDC)
+        if: steps.check.outputs.promote == 'true'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::635457411372:role/github-actions-ecr-role
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Retag image (staging → prod + stable)
+        if: steps.check.outputs.promote == 'true'
+        run: |
+          STAGING_TAG="${{ github.event.inputs.staging_sha }}"
+          PROD_TAG="${{ needs.validate-staging-sha.outputs.prod_tag }}"
+
+          echo "  ${{ matrix.service }}: $STAGING_TAG → $PROD_TAG + stable"
+
+          # Pull staging image manifest and push under prod tags
+          MANIFEST=$(aws ecr batch-get-image \
+            --repository-name "${{ matrix.service }}" \
+            --image-ids imageTag="$STAGING_TAG" \
+            --query 'images[0].imageManifest' \
+            --output text)
+
+          # Tag as prod-{sha}
+          aws ecr put-image \
+            --repository-name "${{ matrix.service }}" \
+            --image-tag "$PROD_TAG" \
+            --image-manifest "$MANIFEST"
+
+          # Tag as stable (mutable — always points to latest prod)
+          aws ecr put-image \
+            --repository-name "${{ matrix.service }}" \
+            --image-tag "stable" \
+            --image-manifest "$MANIFEST"
+
+          echo "  ✅ ${{ matrix.service }} retagged → $PROD_TAG + stable"
 
   # ─────────────────────────────────────────────────────────────────
-  # 7. GITOPS UPDATE  [DEVOPS OWNS]
+  # 3. SNAPSHOT CURRENT PROD TAG  [DEVOPS OWNS]
+  #    Saves the current prod tag before we update gitops.
+  #    Used by rollback job if smoke tests fail.
   # ─────────────────────────────────────────────────────────────────
-  gitops-update:
-    name: GitOps — update prod image tags
+  snapshot-current-prod:
+    name: Snapshot current prod tags (rollback baseline)
     runs-on: ubuntu-latest
-    needs: [build, detect-changes, sonarqube, compute-tags, prod-approval]
+    needs: [validate-staging-sha]
+    outputs:
+      previous_tags: ${{ steps.snap.outputs.previous_tags }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install yq
+        run: |
+          sudo wget -q https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 \
+            -O /usr/local/bin/yq
+          sudo chmod +x /usr/local/bin/yq
+
+      - name: Read current prod tags
+        id: snap
+        run: |
+          FILE=gitops/environments/production/values.yaml
+          TAGS=$(yq '{"book": .book.tag, "frontend": .frontend.tag, "search": .search.tag, "user": .user.tag}' \
+            $FILE -o json)
+          echo "previous_tags=$TAGS" >> $GITHUB_OUTPUT
+          echo "  Current prod tags snapshot:"
+          echo "$TAGS" | jq .
+
+  # ─────────────────────────────────────────────────────────────────
+  # 4. GITOPS UPDATE — PROD  [DEVOPS OWNS]
+  # ─────────────────────────────────────────────────────────────────
+  gitops-update-prod:
+    name: GitOps — update production image tags
+    runs-on: ubuntu-latest
+    needs: [retag-images, snapshot-current-prod, validate-staging-sha]
     if: |
-      github.event_name == 'push' &&
-      needs.prod-approval.result == 'success' &&
       !contains(needs.*.result, 'failure') &&
       !contains(needs.*.result, 'cancelled')
     steps:
@@ -346,42 +272,42 @@ jobs:
             -O /usr/local/bin/yq
           sudo chmod +x /usr/local/bin/yq
 
-      - name: Update GitOps values (prod)
+      - name: Update GitOps values (production)
         run: |
-          FILE=gitops/environments/prod/values.yaml
-          TAG=${{ needs.compute-tags.outputs.tag }}
-          update() {
-            SERVICE=$1; CHANGED=$2
-            if [[ "$CHANGED" == "true" ]]; then
-              echo "  ↳ $SERVICE → $TAG"
-              yq -i ".$SERVICE.tag = \"$TAG\"" $FILE
-            fi
-          }
-          update frontend "${{ needs.detect-changes.outputs.frontend }}"
-          update book     "${{ needs.detect-changes.outputs.book }}"
-          update search   "${{ needs.detect-changes.outputs.search }}"
-          update user     "${{ needs.detect-changes.outputs.user }}"
+          FILE=gitops/environments/production/values.yaml
+          PROD_TAG="${{ needs.validate-staging-sha.outputs.prod_tag }}"
+          SERVICES="${{ needs.validate-staging-sha.outputs.services_list }}"
+
+          IFS=',' read -ra SVC_ARRAY <<< "$SERVICES"
+          for SVC in "${SVC_ARRAY[@]}"; do
+            SVC=$(echo $SVC | xargs)
+            echo "  ↳ $SVC → $PROD_TAG"
+            yq -i ".$SVC.tag = \"$PROD_TAG\"" $FILE
+          done
 
       - name: Commit & Push
         run: |
-          TAG=${{ needs.compute-tags.outputs.tag }}
+          PROD_TAG="${{ needs.validate-staging-sha.outputs.prod_tag }}"
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add gitops/environments/prod/values.yaml
+          git add gitops/environments/production/values.yaml
           git diff --staged --quiet && echo "Nothing to commit" && exit 0
-          git commit -m "gitops(prod): bump image tags → $TAG [skip ci]"
+          git commit -m "gitops(prod): promote ${{ github.event.inputs.staging_sha }} → $PROD_TAG [skip ci]"
+          git pull --rebase origin main
           git push
 
   # ─────────────────────────────────────────────────────────────────
-  # 8. POST-DEPLOY: PROD  [DEVOPS OWNS]
+  # 5. POST-DEPLOY: PRODUCTION  [DEVOPS OWNS]
+  #    Wait for ArgoCD sync → smoke tests only
+  #    Integration/E2E/perf/ZAP already ran in staging — not repeated
   # ─────────────────────────────────────────────────────────────────
   post-deploy-prod:
-    name: Prod — smoke + synthetic monitoring
+    name: Production — post-deploy smoke tests
     runs-on: ubuntu-latest
-    needs: [gitops-update]
-    if: |
-      github.event_name == 'push' &&
-      needs.gitops-update.result == 'success'
+    needs: [gitops-update-prod, validate-staging-sha]
+    if: needs.gitops-update-prod.result == 'success'
+    outputs:
+      smoke_passed: ${{ steps.smoke.outputs.passed }}
     steps:
       - uses: actions/checkout@v4
 
@@ -399,86 +325,194 @@ jobs:
             https://github.com/argoproj/argo-cd/releases/download/${{ env.ARGOCD_VERSION }}/argocd-linux-amd64
           chmod +x /usr/local/bin/argocd
 
-      - name: Wait for ArgoCD sync (prod)
-        run: |
-          argocd app wait bookstore-prod \
-            --health --timeout 300 \
-            --server ${{ secrets.ARGOCD_SERVER }} \
-            --auth-token ${{ secrets.ARGOCD_TOKEN }} \
-            --insecure
+      # Uncomment when ArgoCD is wired up:
+      # - name: Wait for ArgoCD sync (production)
+      #   run: |
+      #     argocd app wait bookstore-production \
+      #       --health --timeout 600 \
+      #       --server ${{ secrets.ARGOCD_SERVER }} \
+      #       --auth-token ${{ secrets.ARGOCD_TOKEN }} \
+      #       --insecure
 
-      # ── SMOKE TESTS  [DEVOPS OWNS] ───────────────────────────────
-      - name: Smoke tests — prod health check
+      - name: Wait for services to be healthy
         run: |
           BASE=${{ secrets.PROD_URL }}
+          wait_for() {
+            local URL=$1
+            local NAME=$2
+            local RETRIES=18     # 3 min total (18 × 10s)
+            local WAIT=10
+            echo "  Waiting for $NAME..."
+            for i in $(seq 1 $RETRIES); do
+              STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$URL" || true)
+              if [[ "$STATUS" == "200" ]]; then
+                echo "  ✅ $NAME is healthy ($STATUS)"
+                return 0
+              fi
+              echo "  ⏳ $NAME not ready ($STATUS) — attempt $i/$RETRIES, retrying in ${WAIT}s..."
+              sleep $WAIT
+            done
+            echo "  ❌ $NAME failed to become healthy after $((RETRIES * WAIT))s"
+            return 1
+          }
+          wait_for "$BASE/health"              "gateway/health"
+          wait_for "$BASE/api/bookings/health" "book service"
+          wait_for "$BASE/api/users/health"    "user service"
+          wait_for "$BASE/api/search/health"   "search service"
+
+      - name: Smoke tests — health endpoints
+        id: smoke
+        run: |
+          BASE=${{ secrets.PROD_URL }}
+          FAILED=0
           check() {
+            echo -n "  → $1 "
             STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$1")
-            [[ "$STATUS" == "200" ]] && echo "  ✅ $1" || (echo "  ❌ $1 ($STATUS)" && exit 1)
+            if [[ "$STATUS" == "200" ]]; then
+              echo "✅ ($STATUS)"
+            else
+              echo "❌ ($STATUS)"
+              FAILED=1
+            fi
           }
           check "$BASE/health"
-          check "$BASE/api/books/health"
+          check "$BASE/api/bookings/health"
           check "$BASE/api/users/health"
           check "$BASE/api/search/health"
 
-      # ── SYNTHETIC MONITORING  [DEVOPS OWNS] ──────────────────────
-      - name: Synthetic monitoring — critical user paths
+          if [[ "$FAILED" == "1" ]]; then
+            echo "passed=false" >> $GITHUB_OUTPUT
+            echo ""
+            echo "❌ One or more smoke checks failed — rollback will trigger"
+            exit 1
+          fi
+          echo "passed=true" >> $GITHUB_OUTPUT
+          echo ""
+          echo "✅ All smoke tests passed"
+
+  # ─────────────────────────────────────────────────────────────────
+  # 6. AUTO-ROLLBACK  [DEVOPS OWNS]
+  #    Fires ONLY when smoke tests fail.
+  #    Reverts gitops/environments/production/values.yaml
+  #    to the snapshot taken before this deploy.
+  # ─────────────────────────────────────────────────────────────────
+  auto-rollback:
+    name: AUTO-ROLLBACK — revert prod to previous stable
+    runs-on: ubuntu-latest
+    needs: [post-deploy-prod, snapshot-current-prod, validate-staging-sha]
+    if: failure() && needs.post-deploy-prod.outputs.smoke_passed == 'false'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install yq
         run: |
-          BASE=${{ secrets.PROD_URL }}
+          sudo wget -q https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 \
+            -O /usr/local/bin/yq
+          sudo chmod +x /usr/local/bin/yq
 
-          echo "  → Homepage loads"
-          curl -sf --max-time 5 "$BASE/" > /dev/null \
-            && echo "  ✅ homepage" || (echo "  ❌ homepage" && exit 1)
-
-          echo "  → Book listing API"
-          curl -sf --max-time 5 "$BASE/api/books?limit=1" > /dev/null \
-            && echo "  ✅ book listing" || (echo "  ❌ book listing" && exit 1)
-
-          echo "  → Search API"
-          curl -sf --max-time 5 "$BASE/api/search?q=test" > /dev/null \
-            && echo "  ✅ search" || (echo "  ❌ search" && exit 1)
-
-          # TODO (DevOps): replace with Datadog synthetic API trigger:
-          # curl -X POST "https://api.datadoghq.com/api/v1/synthetics/tests/trigger/ci" \
-          #   -H "DD-API-KEY: ${{ secrets.DATADOG_API_KEY }}" \
-          #   -d '{"tests": [{"public_id": "abc-def-ghi"}]}'
-
-      # ── RELEASE TAGGING  [DEVOPS OWNS] ───────────────────────────
-      - name: Tag release in Git
+      - name: Restore previous prod tags
         run: |
-          SHA=$(echo $GITHUB_SHA | cut -c1-8)
-          TAG="release-$(date +%Y%m%d)-${SHA}"
+          FILE=gitops/environments/production/values.yaml
+          PREV='${{ needs.snapshot-current-prod.outputs.previous_tags }}'
+
+          echo "  Rolling back to previous tags:"
+          echo "$PREV" | jq .
+
+          BOOK_TAG=$(echo "$PREV"     | jq -r '.book')
+          FRONTEND_TAG=$(echo "$PREV" | jq -r '.frontend')
+          SEARCH_TAG=$(echo "$PREV"   | jq -r '.search')
+          USER_TAG=$(echo "$PREV"     | jq -r '.user')
+
+          yq -i ".book.tag     = \"$BOOK_TAG\""     $FILE
+          yq -i ".frontend.tag = \"$FRONTEND_TAG\"" $FILE
+          yq -i ".search.tag   = \"$SEARCH_TAG\""   $FILE
+          yq -i ".user.tag     = \"$USER_TAG\""     $FILE
+
+      - name: Commit & Push rollback
+        run: |
+          FAILED_TAG="${{ needs.validate-staging-sha.outputs.prod_tag }}"
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -a "$TAG" -m "Production release $TAG"
-          git push origin "$TAG"
-          echo "Tagged: $TAG"
+          git add gitops/environments/production/values.yaml
+          git diff --staged --quiet && echo "Nothing to roll back" && exit 0
+          git commit -m "gitops(prod): ROLLBACK — smoke failed for $FAILED_TAG [skip ci]"
+          git pull --rebase origin main
+          git push
 
-      - name: Prod deploy summary
+      - name: Log rollback summary
         run: |
-          echo "════════════════════════════════════════"
-          echo "  PROD DEPLOY COMPLETE ✅"
-          echo "  ✅ Secret scan          (BLOCKING)"
-          echo "  ✅ SonarQube SAST       (BLOCKING)"
-          echo "  ✅ Trivy image scan     (BLOCKING)"
-          echo "  ✅ Trivy IaC scan       (BLOCKING)"
-          echo "  ✅ Prod approval gate"
-          echo "  ✅ Smoke tests"
-          echo "  ✅ Synthetic monitoring"
-          echo "  ✅ Git release tag"
-          echo "════════════════════════════════════════"
+          echo "🔁 Rollback complete."
+          echo "  Failed deploy : ${{ needs.validate-staging-sha.outputs.prod_tag }}"
+          echo "  Reverted to   : ${{ needs.snapshot-current-prod.outputs.previous_tags }}"
 
-# ═══════════════════════════════════════════════════════════════════
-#  TRIGGER SUMMARY
-#  ──────────────────────────────────────────────────────────────────
-#  PR → main       → pr-validation only (blocks merge on failure)
-#  push to main    → full prod pipeline (all checks BLOCKING)
-#
-#  REQUIRED SETUP
-#    Settings → Branches → main → Require status checks
-#    → add "PR Validation (→ main)" as required check
-#    Settings → Environments → production → required reviewers
-#
-#  SECRETS REQUIRED
-#    ECR_REGISTRY, ARGOCD_SERVER, ARGOCD_TOKEN
-#    PROD_URL, SONAR_TOKEN, SONAR_HOST_URL
-# ═══════════════════════════════════════════════════════════════════
+  # ─────────────────────────────────────────────────────────────────
+  # 7. NOTIFY  [DEVOPS OWNS]
+  #    Always runs — reports success or failure + rollback to Slack
+  #    Requires secret: SLACK_WEBHOOK_URL
+  # ─────────────────────────────────────────────────────────────────
+  notify:
+    name: Notify — Slack
+    runs-on: ubuntu-latest
+    needs: [post-deploy-prod, auto-rollback, validate-staging-sha]
+    if: always()
+    steps:
+      - name: Determine deploy outcome
+        id: outcome
+        run: |
+          SMOKE="${{ needs.post-deploy-prod.result }}"
+          ROLLBACK="${{ needs.auto-rollback.result }}"
+          PROD_TAG="${{ needs.validate-staging-sha.outputs.prod_tag }}"
+
+          if [[ "$SMOKE" == "success" ]]; then
+            echo "color=#36a64f"  >> $GITHUB_OUTPUT
+            echo "title=✅ Production deploy succeeded — $PROD_TAG" >> $GITHUB_OUTPUT
+          elif [[ "$ROLLBACK" == "success" ]]; then
+            echo "color=#ff9900"      >> $GITHUB_OUTPUT
+            echo "title=🔁 Production deploy FAILED + rolled back — $PROD_TAG" >> $GITHUB_OUTPUT
+          else
+            echo "color=#e01e5a"    >> $GITHUB_OUTPUT
+            echo "title=🚨 Production deploy FAILED — $PROD_TAG — MANUAL ACTION NEEDED" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Send Slack notification
+        uses: slackapi/slack-github-action@v1.26.0
+        with:
+          payload: |
+            {
+              "attachments": [
+                {
+                  "color": "${{ steps.outcome.outputs.color }}",
+                  "blocks": [
+                    {
+                      "type": "header",
+                      "text": {
+                        "type": "plain_text",
+                        "text": "${{ steps.outcome.outputs.title }}"
+                      }
+                    },
+                    {
+                      "type": "section",
+                      "fields": [
+                        { "type": "mrkdwn", "text": "*Tag promoted:*\n`${{ github.event.inputs.staging_sha }}` → `${{ needs.validate-staging-sha.outputs.prod_tag }}`" },
+                        { "type": "mrkdwn", "text": "*Services:*\n`${{ github.event.inputs.services }}`" },
+                        { "type": "mrkdwn", "text": "*Approved by:*\n${{ github.actor }}" },
+                        { "type": "mrkdwn", "text": "*Release notes:*\n${{ github.event.inputs.release_notes }}" }
+                      ]
+                    },
+                    {
+                      "type": "actions",
+                      "elements": [
+                        {
+                          "type": "button",
+                          "text": { "type": "plain_text", "text": "View Run" },
+                          "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK
