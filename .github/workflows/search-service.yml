@@ -1,0 +1,27 @@
+name: search-service-ci
+
+on:
+  push:
+    branches: [main, develop, 'release/**']
+    paths:
+      - 'services/search-service/**'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'services/search-service/**'
+  workflow_dispatch:
+
+jobs:
+  ci:
+    uses: ./.github/workflows/_reusable-go-ci.yml
+    with:
+      service-name: search-service
+      service-path: services/search-service
+      ecr-registry: ${{ vars.ECR_REGISTRY }}
+      sonar-project-key: skybook-search-service
+      gitops-repo: yourusername/skybook-gitops
+      target-env: staging
+    secrets:
+      AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+      GITOPS_PAT: ${{ secrets.GITOPS_PAT }}

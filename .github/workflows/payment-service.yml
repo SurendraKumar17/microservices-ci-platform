@@ -1,0 +1,27 @@
+name: payment-service-ci
+
+on:
+  push:
+    branches: [main, develop, 'release/**']
+    paths:
+      - 'services/payment-service/**'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'services/payment-service/**'
+  workflow_dispatch:
+
+jobs:
+  ci:
+    uses: ./.github/workflows/_reusable-go-ci.yml
+    with:
+      service-name: payment-service
+      service-path: services/payment-service
+      ecr-registry: ${{ vars.ECR_REGISTRY }}
+      sonar-project-key: skybook-payment-service
+      gitops-repo: yourusername/skybook-gitops
+      target-env: staging
+    secrets:
+      AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+      GITOPS_PAT: ${{ secrets.GITOPS_PAT }}

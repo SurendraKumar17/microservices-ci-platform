@@ -1,0 +1,289 @@
+#
+#  REUSABLE GO CI TEMPLATE
+#  Used by: search-service, payment-service
+#  Mirrors GitLab stages: validate -> scan -> sast -> build -> sign -> gitops
+#
+name: _reusable-go-ci
+
+on:
+  workflow_call:
+    inputs:
+      service-name:
+        required: true
+        type: string
+      service-path:
+        required: true
+        type: string
+      aws-region:
+        required: false
+        type: string
+        default: us-east-1
+      ecr-registry:
+        required: true
+        type: string
+      sonar-project-key:
+        required: false
+        type: string
+        default: ''
+      gitops-repo:
+        required: true
+        type: string
+      target-env:
+        required: false
+        type: string
+        default: staging
+    secrets:
+      AWS_ROLE_ARN:
+        required: true
+      SONAR_TOKEN:
+        required: false
+      GITOPS_PAT:
+        required: true
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  # ── STAGE: validate ──────────────────────────────────────────────
+  validate:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ inputs.service-path }}
+    outputs:
+      changed: ${{ steps.detect.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect if this service changed
+        id: detect
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "Manually triggered -> treating as changed"
+            exit 0
+          fi
+
+          BEFORE="${{ github.event.before }}"
+          if [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "No previous SHA (new branch) -> treating as changed"
+            exit 0
+          fi
+
+          if git diff --name-only "$BEFORE" "${{ github.sha }}" | grep -q "^${{ inputs.service-path }}/"; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "${{ inputs.service-path }} changed"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "${{ inputs.service-path }} unchanged - skipping"
+          fi
+
+      - name: Secret scan (TruffleHog)
+        if: steps.detect.outputs.changed == 'true'
+        shell: bash
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/trufflesecurity/trufflehog/main/scripts/install.sh \
+            | sh -s -- -b /usr/local/bin
+          trufflehog git file://. \
+            --since-commit "${{ github.event.before }}" \
+            --branch "${{ github.ref_name }}" \
+            --only-verified \
+            --fail
+
+      - name: Setup Go
+        if: steps.detect.outputs.changed == 'true'
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache-dependency-path: ${{ inputs.service-path }}/go.sum
+
+      - name: Lint Dockerfile (Hadolint)
+        if: steps.detect.outputs.changed == 'true'
+        run: |
+          docker run --rm -i hadolint/hadolint \
+            hadolint --failure-threshold warning - < Dockerfile
+
+      - name: go vet
+        if: steps.detect.outputs.changed == 'true'
+        run: go vet ./...
+
+      - name: golangci-lint
+        if: steps.detect.outputs.changed == 'true'
+        uses: golangci/golangci-lint-action@v6
+        with:
+          working-directory: ${{ inputs.service-path }}
+          version: latest
+
+      - name: Unit tests (go test)
+        if: steps.detect.outputs.changed == 'true'
+        run: go test ./... -v -cover
+        continue-on-error: true   # PENDING-style: warn, don't block, until tests are filled in
+
+  # ── STAGE: scan (SCA - dependency vulnerabilities) ──────────────
+  sca-scan:
+    needs: validate
+    if: needs.validate.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ inputs.service-path }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Grype
+        run: curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
+      - name: Grype dependency scan
+        run: grype dir:. --fail-on critical -o table
+
+  # ── STAGE: sast ──────────────────────────────────────────────────
+  sonarqube:
+    needs: validate
+    if: needs.validate.outputs.changed == 'true' && inputs.sonar-project-key != ''
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: SonarQube Scan
+        uses: SonarSource/sonarqube-scan-action@v3
+        with:
+          projectBaseDir: ${{ inputs.service-path }}
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: https://sonarcloud.io
+
+  # ── STAGE: build (docker build, push, image scan, SBOM) ─────────
+  build:
+    needs: [validate, sca-scan]
+    if: needs.validate.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      image-tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compute image tag
+        id: tag
+        run: |
+          SHA=$(echo "${{ github.sha }}" | cut -c1-8)
+          echo "tag=${{ github.ref_name }}-${SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ inputs.aws-region }}
+
+      - name: Login to ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build image
+        working-directory: ${{ inputs.service-path }}
+        run: |
+          docker build \
+            --label "git.sha=${{ github.sha }}" \
+            --label "git.branch=${{ github.ref_name }}" \
+            --label "build.author=${{ github.actor }}" \
+            --label "build.run_url=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            -t ${{ inputs.ecr-registry }}/${{ inputs.service-name }}:${{ steps.tag.outputs.tag }} \
+            .
+
+      - name: Scan image (Trivy)
+        uses: aquasecurity/trivy-action@0.24.0
+        with:
+          image-ref: ${{ inputs.ecr-registry }}/${{ inputs.service-name }}:${{ steps.tag.outputs.tag }}
+          severity: 'CRITICAL,HIGH'
+          exit-code: '0'
+          scanners: 'vuln,secret'
+
+      - name: Generate SBOM (Syft, CycloneDX)
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ inputs.ecr-registry }}/${{ inputs.service-name }}:${{ steps.tag.outputs.tag }}
+          format: cyclonedx-json
+          output-file: sbom-${{ inputs.service-name }}.json
+
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-${{ inputs.service-name }}
+          path: sbom-${{ inputs.service-name }}.json
+          retention-days: 30
+
+      - name: Push image
+        run: docker push ${{ inputs.ecr-registry }}/${{ inputs.service-name }}:${{ steps.tag.outputs.tag }}
+
+  # ── STAGE: sign ───────────────────────────────────────────────────
+  sign-image:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ inputs.aws-region }}
+
+      - name: Login to ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Sign image (keyless)
+        run: |
+          cosign sign --yes \
+            ${{ inputs.ecr-registry }}/${{ inputs.service-name }}:${{ needs.build.outputs.image-tag }}
+
+      - name: Verify signature
+        run: |
+          cosign verify \
+            --certificate-identity-regexp="https://github.com/${{ github.repository }}/.*" \
+            --certificate-oidc-issuer="https://token.actions.githubusercontent.com" \
+            ${{ inputs.ecr-registry }}/${{ inputs.service-name }}:${{ needs.build.outputs.image-tag }}
+
+  # ── STAGE: gitops (cross-repo) ──────────────────────────────────────
+  gitops-update:
+    needs: [build, sign-image]
+    # Only deploy on an actual push to develop (never on pull_request)
+    # main/release/* will get their own separate promotion workflow later
+    if: github.event_name == 'push' && github.ref_name == 'develop'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout skybook-gitops repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.gitops-repo }}
+          token: ${{ secrets.GITOPS_PAT }}
+          path: gitops-repo
+
+      - name: Install yq
+        run: |
+          sudo wget -q https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -O /usr/local/bin/yq
+          sudo chmod +x /usr/local/bin/yq
+
+      - name: Bump image tag in values.yaml
+        working-directory: gitops-repo
+        run: |
+          FILE="environments/${{ inputs.target-env }}/values.yaml"
+          yq -i ".${{ inputs.service-name }}.tag = \"${{ needs.build.outputs.image-tag }}\"" "$FILE"
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add "$FILE"
+
+          if git diff --staged --quiet; then
+            echo "Nothing to commit"
+            exit 0
+          fi
+
+          git commit -m "gitops(${{ inputs.target-env }}): bump ${{ inputs.service-name }} to ${{ needs.build.outputs.image-tag }}"
+          git push origin HEAD:main
