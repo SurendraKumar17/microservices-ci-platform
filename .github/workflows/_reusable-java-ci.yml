@@ -114,7 +114,7 @@ jobs:
       - name: Unit tests (Maven)
         if: steps.detect.outputs.changed == 'true'
         run: mvn test -q
-        continue-on-error: true   # PENDING-style: warn, don't block, until real tests exist
+        continue-on-error: true
 
       - name: Maven build (compile + package, skip tests - already ran above)
         if: steps.detect.outputs.changed == 'true'
@@ -279,8 +279,6 @@ jobs:
   # ── STAGE: gitops (cross-repo) ──────────────────────────────────────
   gitops-update:
     needs: [build, sign-image]
-    # Only deploy on an actual push to develop (never on pull_request)
-    # main/release/* will get their own separate promotion workflow later
     if: github.event_name == 'push' && github.ref_name == 'develop'
     runs-on: ubuntu-latest
     steps:

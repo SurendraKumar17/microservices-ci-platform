@@ -26,7 +26,7 @@ on:
         type: string
         default: ''
       gitops-repo:
-        description: 'org/repo of the skybook-gitops repository'
+        description: 'org/repo of the gitops repository'
         required: true
         type: string
       target-env:
@@ -44,7 +44,7 @@ on:
         required: true
 
 permissions:
-  id-token: write   # needed for OIDC -> AWS role assumption
+  id-token: write
   contents: read
 
 jobs:
@@ -143,13 +143,13 @@ jobs:
         uses: SonarSource/sonarqube-scan-action@v3
         with:
           projectBaseDir: ${{ inputs.service-path }}
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          SONAR_HOST_URL: https://sonarcloud.io
-          SONAR_SCANNER_OPTS: >
+          args: >
             -Dsonar.projectKey=${{ inputs.sonar-project-key }}
             -Dsonar.organization=${{ github.repository_owner }}
             -Dsonar.exclusions=node_modules/**,dist/**,coverage/**
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: https://sonarcloud.io
 
   # ── STAGE: build (docker build, push, image scan, SBOM) ─────────
   build:

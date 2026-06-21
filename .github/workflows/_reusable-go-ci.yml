@@ -86,16 +86,10 @@ jobs:
       - name: Secret scan (TruffleHog)
         if: steps.detect.outputs.changed == 'true'
         shell: bash
-        # NOTE: this step MUST run at the repo root, not inputs.service-path
-        # (the job-level `defaults.run.working-directory` above), because
-        # .git only exists at the repo root. Setting working-directory here
-        # explicitly overrides the job default for this one step.
         working-directory: ${{ github.workspace }}
         run: |
           curl -sSfL https://raw.githubusercontent.com/trufflesecurity/trufflehog/main/scripts/install.sh \
             | sh -s -- -b /usr/local/bin
-          # Use an absolute file:// URL (not "file://.") so this can't
-          # silently break again if working-directory ever drifts.
           trufflehog git "file://${{ github.workspace }}" \
             --since-commit "${{ github.event.before }}" \
             --branch "${{ github.ref_name }}" \
@@ -129,7 +123,7 @@ jobs:
       - name: Unit tests (go test)
         if: steps.detect.outputs.changed == 'true'
         run: go test ./... -v -cover
-        continue-on-error: true   # PENDING-style: warn, don't block, until tests are filled in
+        continue-on-error: true
 
   # ── STAGE: scan (SCA - dependency vulnerabilities) ──────────────
   sca-scan:
@@ -160,6 +154,9 @@ jobs:
         uses: SonarSource/sonarqube-scan-action@v3
         with:
           projectBaseDir: ${{ inputs.service-path }}
+          args: >
+            -Dsonar.projectKey=${{ inputs.sonar-project-key }}
+            -Dsonar.organization=${{ github.repository_owner }}
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: https://sonarcloud.io
@@ -260,8 +257,6 @@ jobs:
   # ── STAGE: gitops (cross-repo) ──────────────────────────────────────
   gitops-update:
     needs: [build, sign-image]
-    # Only deploy on an actual push to develop (never on pull_request)
-    # main/release/* will get their own separate promotion workflow later
     if: github.event_name == 'push' && github.ref_name == 'develop'
     runs-on: ubuntu-latest
     steps:
