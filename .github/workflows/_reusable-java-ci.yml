@@ -281,6 +281,9 @@ jobs:
     needs: [build, sign-image]
     if: github.event_name == 'push' && github.ref_name == 'develop'
     runs-on: ubuntu-latest
+    concurrency:
+      group: gitops-repo-push
+      cancel-in-progress: false
     steps:
       - name: Checkout skybook-gitops repo
         uses: actions/checkout@v4
