@@ -2,11 +2,11 @@ name: booking-service-ci
 
 on:
   push:
-    branches: [main, develop, 'release/**']
+    branches: [develop]
     paths:
       - 'services/booking-service/**'
   pull_request:
-    branches: [main]
+    branches: [develop]
     paths:
       - 'services/booking-service/**'
   workflow_dispatch:
@@ -18,9 +18,9 @@ jobs:
       service-name: booking-service
       service-path: services/booking-service
       ecr-registry: ${{ vars.ECR_REGISTRY }}
-      sonar-project-key: skybook-booking-service
-      gitops-repo: yourusername/skybook-gitops
-      target-env: staging
+      sonar-project-key: SurendraKumar17_Production-Grade-Microservices-on-Kubernetes
+      gitops-repo: SurendraKumar17/microservices-cd-platform
+      target-env: dev
     secrets:
       AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
       SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}

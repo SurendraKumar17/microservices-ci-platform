@@ -2,14 +2,14 @@ name: frontend-ci
 
 on:
   push:
-    branches: [main, 'release/**']
+    branches: [develop]
     paths:
       - 'services/frontend/**'
   pull_request:
-    branches: [main]
+    branches: [develop]
     paths:
       - 'services/frontend/**'
-  workflow_dispatch:   # allows manual trigger, mirrors GitLab's "if source == web"
+  workflow_dispatch:
 
 jobs:
   ci:
@@ -17,10 +17,10 @@ jobs:
     with:
       service-name: frontend
       service-path: services/frontend
-      ecr-registry: ${{ vars.ECR_REGISTRY }}        # set in Repo Settings -> Variables
-      sonar-project-key: skybook-frontend
-      gitops-repo: skybook-org/skybook-gitops        # replace skybook-org with your actual org
-      target-env: staging
+      ecr-registry: ${{ vars.ECR_REGISTRY }}
+      sonar-project-key: SurendraKumar17_Production-Grade-Microservices-on-Kubernetes
+      gitops-repo: SurendraKumar17/microservices-cd-platform
+      target-env: dev
     secrets:
       AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
       SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}

@@ -2,11 +2,11 @@ name: auth-service-ci
 
 on:
   push:
-    branches: [main, develop, 'release/**']
+    branches: [develop]
     paths:
       - 'services/auth-service/**'
   pull_request:
-    branches: [main]
+    branches: [develop]
     paths:
       - 'services/auth-service/**'
   workflow_dispatch:
@@ -18,9 +18,9 @@ jobs:
       service-name: auth-service
       service-path: services/auth-service
       ecr-registry: ${{ vars.ECR_REGISTRY }}
-      sonar-project-key: skybook-auth-service
-      gitops-repo: yourusername/skybook-gitops
-      target-env: staging
+      sonar-project-key: SurendraKumar17_Production-Grade-Microservices-on-Kubernetes
+      gitops-repo: SurendraKumar17/microservices-cd-platform
+      target-env: dev
     secrets:
       AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
       SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}

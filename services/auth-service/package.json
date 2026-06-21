@@ -1,0 +1,19 @@
+{
+  "name": "skybook-auth-service",
+  "version": "1.0.0",
+  "description": "SkyBook Auth Service",
+  "main": "app.js",
+  "scripts": {
+    "start": "node app.js",
+    "dev": "nodemon app.js",
+    "test:unit": "echo \"no unit tests yet\" && exit 0"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "jsonwebtoken": "^9.0.2",
+    "bcryptjs": "^2.4.3"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
+  }
+}

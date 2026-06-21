@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>BookMyTrip - Flights, Hotels & Packages</title>
+  <title>SkyBook - Flights, Hotels & Packages</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style>
@@ -29,43 +29,7 @@
 
     body { font-family: var(--font-main); background: var(--bg-dark); color: var(--text-primary); min-height: 100vh; }
 
-    /* UTILITY BAR */
-    .utility-bar {
-      display: flex; align-items: center; justify-content: flex-end; gap: 1.5rem;
-      padding: 0.5rem 2rem; background: #060a14; border-bottom: 1px solid var(--border);
-      font-size: 0.8rem;
-    }
-    .utility-bar a {
-      display: flex; align-items: center; gap: 0.4rem;
-      color: var(--text-secondary); text-decoration: none; font-weight: 500;
-      transition: color 0.2s;
-    }
-    .utility-bar a:hover { color: var(--text-primary); }
-    .utility-divider { width: 1px; height: 16px; background: var(--border); }
-    .utility-signup {
-      color: var(--accent-teal); border: 1px solid var(--accent-teal); border-radius: 6px;
-      padding: 0.3rem 0.9rem;
-    }
-    .utility-signup:hover { background: rgba(14,165,233,0.1); color: var(--accent-teal); }
-    .utility-signin {
-      background: linear-gradient(135deg, var(--accent-blue), #6d28d9); color: white !important;
-      border-radius: 6px; padding: 0.3rem 0.9rem;
-    }
-    .utility-signin:hover { opacity: 0.9; }
-
-    /* SECONDARY NAV (Book Trip / Manage Booking / Check In / ...) */
-    .secondary-nav {
-      display: flex; background: var(--bg-nav); border-bottom: 1px solid var(--border);
-      overflow-x: auto;
-    }
-    .secondary-nav a {
-      padding: 0.9rem 1.6rem; color: var(--text-secondary); text-decoration: none;
-      font-size: 0.8rem; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase;
-      white-space: nowrap; border-bottom: 3px solid transparent; transition: all 0.2s;
-    }
-    .secondary-nav a:hover { color: var(--text-primary); }
-    .secondary-nav a.active { color: var(--text-primary); border-bottom-color: var(--accent-teal); background: var(--bg-input); }
-
+    /* NAV */
     nav {
       display: flex; align-items: center; justify-content: space-between;
       padding: 0 2rem; height: 64px;
@@ -75,6 +39,13 @@
     .logo { font-family: var(--font-display); font-size: 1.4rem; font-weight: 700; }
     .logo span:first-child { color: var(--text-primary); }
     .logo span:last-child { color: var(--accent-teal); }
+    .nav-links { display: flex; gap: 0.5rem; }
+    .nav-links a {
+      padding: 0.4rem 1rem; border-radius: 8px; border: 1px solid var(--border);
+      color: var(--text-primary); text-decoration: none; font-size: 0.9rem; font-weight: 500;
+      transition: all 0.2s;
+    }
+    .nav-links a:hover { background: var(--bg-input); border-color: var(--accent-blue); }
     .nav-right { display: flex; align-items: center; gap: 1rem; }
     .cart-btn {
       display: flex; align-items: center; gap: 0.5rem;
@@ -88,48 +59,59 @@
       font-size: 0.7rem; font-weight: 700;
     }
 
+    /* HERO */
     .hero {
-      background: #ffffff;
+      background: linear-gradient(160deg, #1a2744 0%, #0d1b3e 60%, #0a0f1e 100%);
       padding: 4rem 2rem 3rem; text-align: center; position: relative; overflow: hidden;
     }
-    .hero h1 { font-family: var(--font-display); font-size: clamp(2rem, 5vw, 3rem); font-weight: 700; margin-bottom: 0.75rem; color: #0a0f1e; }
-    .hero p { color: #0a0f1e; font-size: 1rem; margin-bottom: 2.5rem; }
+    .hero::before {
+      content: ''; position: absolute; top: -50%; left: -50%;
+      width: 200%; height: 200%;
+      background: radial-gradient(ellipse at 30% 40%, rgba(59,130,246,0.08) 0%, transparent 60%),
+                  radial-gradient(ellipse at 70% 60%, rgba(14,165,233,0.06) 0%, transparent 50%);
+      pointer-events: none;
+    }
+    .hero h1 { font-family: var(--font-display); font-size: clamp(2rem, 5vw, 3rem); font-weight: 700; margin-bottom: 0.75rem; position: relative; }
+    .hero p { color: var(--text-secondary); font-size: 1rem; margin-bottom: 2.5rem; position: relative; }
 
+    /* SEARCH BOX */
     .search-box {
-      background: #ffffff; border: 1px solid #e2e8f0; border-radius: 16px;
+      background: #1c2538; border: 1px solid var(--border); border-radius: 16px;
       padding: 1.5rem; max-width: 860px; margin: 0 auto; position: relative;
-      box-shadow: 0 10px 30px rgba(15,23,42,0.08);
     }
     .search-tabs { display: flex; gap: 0.5rem; margin-bottom: 1.5rem; }
     .tab {
-      padding: 0.5rem 1.2rem; border-radius: 8px; border: 1px solid #e2e8f0;
-      background: #f8fafc; color: #0a0f1e; cursor: pointer;
+      padding: 0.5rem 1.2rem; border-radius: 8px; border: 1px solid var(--border);
+      background: transparent; color: var(--text-secondary); cursor: pointer;
       font-family: var(--font-main); font-size: 0.9rem; font-weight: 600; transition: all 0.2s;
     }
-    .tab.active { background: #0a0f1e; color: #ffffff; border-color: #0a0f1e; }
+    .tab.active { background: #252d3d; color: var(--text-primary); border-color: #3a4a6a; }
     .search-fields { display: flex; gap: 1rem; align-items: flex-end; flex-wrap: wrap; }
     .field-group { display: flex; flex-direction: column; gap: 0.3rem; flex: 1; min-width: 160px; }
-    .field-group label { font-size: 0.7rem; font-weight: 700; letter-spacing: 0.08em; color: #5a6a8a; text-transform: uppercase; }
+    .field-group label { font-size: 0.7rem; font-weight: 700; letter-spacing: 0.08em; color: var(--text-muted); text-transform: uppercase; }
     .field-group input {
-      background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px;
-      padding: 0.75rem 1rem; color: #0a0f1e; font-size: 0.95rem;
+      background: var(--bg-input); border: 1px solid var(--border); border-radius: 10px;
+      padding: 0.75rem 1rem; color: var(--text-primary); font-size: 0.95rem;
       font-family: var(--font-main); outline: none; transition: border-color 0.2s;
     }
     .field-group input:focus { border-color: var(--accent-blue); }
     .search-btn {
       padding: 0.75rem 2rem; border-radius: 10px; border: none;
-      background: var(--accent-blue); color: #ffffff;
+      background: var(--text-primary); color: #0a0f1e;
       font-family: var(--font-main); font-size: 0.95rem; font-weight: 700;
       cursor: pointer; transition: all 0.2s; white-space: nowrap;
     }
-    .search-btn:hover { background: #2563eb; transform: translateY(-1px); }
+    .search-btn:hover { background: #c8d8ff; transform: translateY(-1px); }
 
+    /* MAIN CONTENT */
     main { background: var(--bg-dark); padding: 3rem 2rem; max-width: 1100px; margin: 0 auto; }
 
+    /* SECTION HEADERS */
     .section-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; }
     .section-header h2 { font-family: var(--font-display); font-size: 1.3rem; font-weight: 600; }
     .section-header span { font-size: 0.85rem; color: var(--text-secondary); }
 
+    /* DESTINATION CARDS */
     .destinations-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 1rem; margin-bottom: 3rem; }
     .dest-card {
       border-radius: 14px; overflow: hidden; border: 1px solid var(--border);
@@ -150,6 +132,7 @@
     .dest-card-body .price { font-size: 0.8rem; color: var(--text-muted); }
     .dest-card-body .price span { color: var(--accent-green); font-weight: 700; font-size: 1rem; }
 
+    /* HOTEL CARDS */
     .hotels-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 1rem; margin-bottom: 3rem; }
     .hotel-card {
       border-radius: 14px; overflow: hidden; border: 1px solid var(--border);
@@ -179,6 +162,7 @@
     }
     .book-btn:hover { background: #2563eb; }
 
+    /* FLIGHT RESULTS (hidden by default) */
     #flight-results { margin-bottom: 3rem; }
     .flight-card {
       background: var(--bg-card); border: 1px solid var(--border); border-radius: 14px;
@@ -199,16 +183,11 @@
     .flight-stops { font-size: 0.75rem; color: var(--accent-teal); text-align: center; }
     .flight-price-block { text-align: right; }
     .flight-price { font-size: 1.3rem; font-weight: 700; color: var(--accent-green); font-family: var(--font-display); }
-    .flight-book {
-      padding: 0.5rem 1.2rem; border-radius: 8px; border: none;
-      background: var(--accent-blue); color: white;
-      font-family: var(--font-main); font-weight: 600; cursor: pointer;
-      margin-top: 0.3rem; transition: background 0.2s;
-    }
-    .flight-book:hover:not(:disabled) { background: #2563eb; }
-    .flight-book:disabled { opacity: 0.7; cursor: not-allowed; }
+    .flight-book { padding: 0.5rem 1.2rem; border-radius: 8px; border: none; background: var(--accent-blue); color: white; font-family: var(--font-main); font-weight: 600; cursor: pointer; margin-top: 0.3rem; transition: background 0.2s; }
+    .flight-book:hover { background: #2563eb; }
     .hidden { display: none; }
 
+    /* TOAST */
     .toast {
       position: fixed; bottom: 2rem; right: 2rem;
       background: #22c55e; color: white; padding: 0.75rem 1.5rem;
@@ -216,80 +195,8 @@
       transform: translateY(100px); opacity: 0; transition: all 0.3s; z-index: 999;
     }
     .toast.show { transform: translateY(0); opacity: 1; }
-    .toast.error { background: #ef4444; }
 
-    .modal-overlay {
-      position: fixed; inset: 0; background: rgba(0,0,0,0.75);
-      display: flex; align-items: center; justify-content: center;
-      z-index: 1000; animation: fadeIn 0.2s ease;
-    }
-    .modal-box {
-      background: #1c2333; border: 1px solid #2e3a52; border-radius: 20px;
-      padding: 2.5rem; max-width: 420px; width: 90%; text-align: center;
-      animation: slideUp 0.3s ease;
-    }
-    .modal-icon { font-size: 3.5rem; margin-bottom: 1rem; }
-    .modal-title {
-      font-family: var(--font-display); font-size: 1.5rem; font-weight: 700;
-      color: var(--accent-green); margin-bottom: 0.4rem;
-    }
-    .modal-subtitle { color: var(--text-secondary); font-size: 0.95rem; margin-bottom: 1.5rem; }
-    .modal-ref-box {
-      background: #252d3d; border-radius: 12px; padding: 1rem 1.25rem;
-      margin-bottom: 1.25rem; border: 1px solid var(--border);
-    }
-    .modal-ref-label { font-size: 0.7rem; font-weight: 700; letter-spacing: 0.1em; color: var(--text-muted); text-transform: uppercase; margin-bottom: 0.4rem; }
-    .modal-ref-value { font-size: 1.3rem; font-weight: 700; letter-spacing: 0.08em; color: var(--text-primary); font-family: var(--font-display); }
-    .modal-details {
-      display: flex; justify-content: space-between; align-items: center;
-      padding: 0.75rem 0; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border);
-      margin-bottom: 1.5rem; font-size: 0.9rem;
-    }
-    .modal-details .airline { color: var(--text-secondary); }
-    .modal-details .price { color: var(--accent-green); font-weight: 700; font-size: 1.1rem; }
-    .modal-done-btn {
-      width: 100%; padding: 0.85rem; border-radius: 12px; border: none;
-      background: var(--accent-blue); color: white;
-      font-family: var(--font-main); font-size: 1rem; font-weight: 700;
-      cursor: pointer; transition: background 0.2s, transform 0.1s;
-    }
-    .modal-done-btn:hover { background: #2563eb; transform: translateY(-1px); }
-
-    /* AUTH MODAL (Sign Up / Sign In) */
-    .auth-tabs { display: flex; gap: 0.5rem; margin-bottom: 1.5rem; }
-    .auth-tab {
-      flex: 1; padding: 0.6rem; border-radius: 10px; border: 1px solid var(--border);
-      background: transparent; color: var(--text-secondary); cursor: pointer;
-      font-family: var(--font-main); font-weight: 600; font-size: 0.9rem; transition: all 0.2s;
-    }
-    .auth-tab.active { background: var(--accent-blue); color: #fff; border-color: var(--accent-blue); }
-    .auth-field { margin-bottom: 1rem; text-align: left; }
-    .auth-field label {
-      display: block; font-size: 0.7rem; font-weight: 700; letter-spacing: 0.06em;
-      color: var(--text-muted); text-transform: uppercase; margin-bottom: 0.4rem;
-    }
-    .auth-field input {
-      width: 100%; background: var(--bg-input); border: 1px solid var(--border); border-radius: 10px;
-      padding: 0.75rem 1rem; color: var(--text-primary); font-size: 0.95rem;
-      font-family: var(--font-main); outline: none; transition: border-color 0.2s;
-    }
-    .auth-field input:focus { border-color: var(--accent-blue); }
-    .auth-error {
-      color: #ef4444; font-size: 0.85rem; margin-bottom: 1rem; text-align: left; display: none;
-    }
-    .auth-error.show { display: block; }
-    .auth-submit-btn {
-      width: 100%; padding: 0.85rem; border-radius: 12px; border: none;
-      background: var(--accent-blue); color: white;
-      font-family: var(--font-main); font-size: 1rem; font-weight: 700;
-      cursor: pointer; transition: background 0.2s, transform 0.1s;
-    }
-    .auth-submit-btn:hover:not(:disabled) { background: #2563eb; transform: translateY(-1px); }
-    .auth-submit-btn:disabled { opacity: 0.6; cursor: not-allowed; }
-
-    @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
-    @keyframes slideUp { from { transform: translateY(24px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
-
+    /* LOADING */
     .loading { text-align: center; padding: 2rem; color: var(--text-secondary); font-size: 0.9rem; }
     .spinner { display: inline-block; width: 20px; height: 20px; border: 2px solid var(--border); border-top-color: var(--accent-blue); border-radius: 50%; animation: spin 0.8s linear infinite; vertical-align: middle; margin-right: 0.5rem; }
     @keyframes spin { to { transform: rotate(360deg); } }
@@ -297,45 +204,34 @@
     @media (max-width: 640px) {
       .search-fields { flex-direction: column; }
       nav { padding: 0 1rem; }
-      .secondary-nav { font-size: 0.7rem; }
+      .nav-links { display: none; }
     }
   </style>
 </head>
 <body>
 
-<div class="utility-bar">
-  <a href="#"><span>🤝</span> Support</a>
-  <a href="#"><span>🔍</span> Search</a>
-  <a href="#"><span>🌐</span> EN ▾</a>
-  <span class="utility-divider"></span>
-  <a href="#" class="utility-signup" onclick="openAuthModal('signup'); return false;">Sign Up</a>
-  <a href="#" class="utility-signin" onclick="openAuthModal('signin'); return false;">Sign In</a>
-</div>
-
-<div class="secondary-nav">
-  <a href="#" class="active" onclick="showSection('home')">Book Trip</a>
-  <a href="#" onclick="showSection('home')">Manage Booking</a>
-  <a href="#" onclick="showSection('home')">Check In</a>
-  <a href="#" onclick="showSection('home')">Flight Status</a>
-  <a href="#" onclick="showSection('home')">Flight Schedule</a>
-</div>
-
+<!-- NAV -->
 <nav>
-  <div class="logo"><span>Book</span><span>MyTrip</span></div>
+  <div class="logo"><span>Sky</span><span>Book</span></div>
+  <div class="nav-links">
+    <a href="#" onclick="showSection('home')">Home</a>
+    <a href="#" onclick="showSection('flights')">Flights</a>
+    <a href="#" onclick="showSection('hotels')">Hotels</a>
+    <a href="#" onclick="showSection('home')">My Trip</a>
+  </div>
   <div class="nav-right">
     <button class="cart-btn">Cart <span class="cart-badge" id="cart-count">0</span></button>
   </div>
 </nav>
 
+<!-- HERO -->
 <div class="hero">
   <h1>Where do you want to go?</h1>
-  <p>Flights, hotels, trains, buses and packages — all in one place</p>
+  <p>Flights, hotels and packages — all in one place</p>
   <div class="search-box">
     <div class="search-tabs">
       <button class="tab active" onclick="setTab('Flights',this)">Flights</button>
       <button class="tab" onclick="setTab('Hotels',this)">Hotels</button>
-      <button class="tab" onclick="setTab('Trains',this)">Trains</button>
-      <button class="tab" onclick="setTab('Bus',this)">Bus</button>
       <button class="tab" onclick="setTab('Packages',this)">Packages</button>
     </div>
     <div class="search-fields">
@@ -356,8 +252,10 @@
   </div>
 </div>
 
+<!-- MAIN -->
 <main>
 
+  <!-- FLIGHT RESULTS -->
   <div id="flight-results" class="hidden">
     <div class="section-header">
       <h2 id="results-title">Flight Results</h2>
@@ -366,6 +264,7 @@
     <div id="results-list"></div>
   </div>
 
+  <!-- POPULAR DESTINATIONS -->
   <div id="section-destinations">
     <div class="section-header">
       <h2>Popular destinations</h2>
@@ -407,6 +306,7 @@
     </div>
   </div>
 
+  <!-- FEATURED HOTELS -->
   <div id="section-hotels">
     <div class="section-header">
       <h2>Featured hotels</h2>
@@ -431,11 +331,9 @@
     el.classList.add('active');
   }
 
-  function showToast(msg, isError = false) {
+  function showToast(msg) {
     const t = document.getElementById('toast');
     t.textContent = msg;
-    t.classList.remove('error');
-    if (isError) t.classList.add('error');
     t.classList.add('show');
     setTimeout(() => t.classList.remove('show'), 2500);
   }
@@ -448,7 +346,7 @@
     const from = document.getElementById('from').value;
     const to = document.getElementById('to').value;
     const depart = document.getElementById('depart').value;
-    if (!from || !to) { showToast('Please fill in From and To fields', true); return; }
+    if (!from || !to) { showToast('Please fill in From and To fields'); return; }
 
     const resultsDiv = document.getElementById('flight-results');
     const listDiv = document.getElementById('results-list');
@@ -464,7 +362,6 @@
     } catch(e) {
       listDiv.innerHTML = '<div class="loading">⚠️ Search service unavailable. Showing sample results.</div>';
       renderFlights(getSampleFlights(from, to));
-      document.getElementById('results-count').textContent = `${getSampleFlights(from, to).length} flights found`;
     }
 
     resultsDiv.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -502,171 +399,17 @@
         </div>
         <div class="flight-price-block">
           <div class="flight-price">$${f.price}</div>
-          <button class="flight-book" onclick="bookNow(event, '${f.airline}', ${f.price}, '${f.class||'Economy'}')">Book Now</button>
+          <button class="flight-book" onclick="addToCart('flight','${f.airline}',${f.price})">Book Now</button>
         </div>
       </div>
     `).join('');
-  }
-
-  async function bookNow(event, airline, price, flightClass) {
-    const btn = event.target;
-    btn.disabled = true;
-    btn.textContent = 'Booking...';
-
-    try {
-      await fetch('/api/bookings/cart', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type: 'flight', name: airline, price })
-      });
-
-      const res = await fetch('/api/bookings/checkout', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          items: [{ type: 'flight', name: airline, price }],
-          user_id: 1,
-          travel_date: document.getElementById('depart').value
-        })
-      });
-
-      const data = await res.json();
-
-      if (res.ok) {
-        btn.textContent = '✓ Booked!';
-        btn.style.background = '#22c55e';
-        cartCount++;
-        updateCart();
-        const ref = data.bookings?.[0]?.bookingRef || ('SKY' + Math.random().toString(36).substr(2,7).toUpperCase());
-        showSuccessModal(airline, price, flightClass, ref);
-      } else {
-        throw new Error(data.error || 'Booking failed');
-      }
-    } catch (e) {
-      btn.disabled = false;
-      btn.textContent = 'Book Now';
-      btn.style.background = '';
-      showToast('⚠️ Booking failed, please try again', true);
-    }
-  }
-
-  function showSuccessModal(airline, price, flightClass, ref) {
-    const existing = document.getElementById('success-modal');
-    if (existing) existing.remove();
-
-    const modal = document.createElement('div');
-    modal.id = 'success-modal';
-    modal.className = 'modal-overlay';
-    modal.innerHTML = `
-      <div class="modal-box">
-        <div class="modal-icon">🎉</div>
-        <div class="modal-title">Booking Confirmed!</div>
-        <div class="modal-subtitle">Happy Journey! Your seat is reserved.</div>
-        <div class="modal-ref-box">
-          <div class="modal-ref-label">Booking Reference</div>
-          <div class="modal-ref-value">${ref}</div>
-        </div>
-        <div class="modal-details">
-          <span class="airline">✈️ ${airline} · ${flightClass}</span>
-          <span class="price">$${price}</span>
-        </div>
-        <button class="modal-done-btn" onclick="document.getElementById('success-modal').remove()">Done</button>
-      </div>
-    `;
-    modal.addEventListener('click', (e) => {
-      if (e.target === modal) modal.remove();
-    });
-    document.body.appendChild(modal);
-  }
-
-  // ── Auth modal (Sign Up / Sign In) ─────────────────────────────────
-  function openAuthModal(initialTab) {
-    const existing = document.getElementById('auth-modal');
-    if (existing) existing.remove();
-
-    const modal = document.createElement('div');
-    modal.id = 'auth-modal';
-    modal.className = 'modal-overlay';
-    modal.innerHTML = `
-      <div class="modal-box">
-        <div class="auth-tabs">
-          <button class="auth-tab" id="auth-tab-signin" onclick="setAuthTab('signin')">Sign In</button>
-          <button class="auth-tab" id="auth-tab-signup" onclick="setAuthTab('signup')">Sign Up</button>
-        </div>
-        <div class="auth-error" id="auth-error"></div>
-        <div class="auth-field">
-          <label>Email</label>
-          <input type="email" id="auth-email" placeholder="you@example.com" />
-        </div>
-        <div class="auth-field">
-          <label>Password</label>
-          <input type="password" id="auth-password" placeholder="••••••••" />
-        </div>
-        <button class="auth-submit-btn" id="auth-submit-btn" onclick="submitAuth()">Sign In</button>
-      </div>
-    `;
-    modal.addEventListener('click', (e) => {
-      if (e.target === modal) modal.remove();
-    });
-    document.body.appendChild(modal);
-    setAuthTab(initialTab || 'signin');
-  }
-
-  function setAuthTab(tab) {
-    document.getElementById('auth-tab-signin').classList.toggle('active', tab === 'signin');
-    document.getElementById('auth-tab-signup').classList.toggle('active', tab === 'signup');
-    document.getElementById('auth-submit-btn').textContent = tab === 'signup' ? 'Create Account' : 'Sign In';
-    document.getElementById('auth-submit-btn').dataset.mode = tab;
-    document.getElementById('auth-error').classList.remove('show');
-  }
-
-  async function submitAuth() {
-    const mode = document.getElementById('auth-submit-btn').dataset.mode || 'signin';
-    const email = document.getElementById('auth-email').value.trim();
-    const password = document.getElementById('auth-password').value;
-    const errorEl = document.getElementById('auth-error');
-    const btn = document.getElementById('auth-submit-btn');
-
-    errorEl.classList.remove('show');
-
-    if (!email || !password) {
-      errorEl.textContent = 'Please enter both email and password.';
-      errorEl.classList.add('show');
-      return;
-    }
-
-    const endpoint = mode === 'signup' ? '/api/auth/register' : '/api/auth/login';
-    btn.disabled = true;
-    btn.textContent = mode === 'signup' ? 'Creating account...' : 'Signing in...';
-
-    try {
-      const res = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password })
-      });
-      const data = await res.json();
-
-      if (!res.ok) {
-        throw new Error(data.error || 'Something went wrong');
-      }
-
-      // success - close modal, show a toast (real session/token handling comes later
-      // once frontend -> auth-service routing is wired up)
-      document.getElementById('auth-modal').remove();
-      showToast(`✅ Welcome${data.user?.email ? ', ' + data.user.email : ''}!`);
-    } catch (e) {
-      errorEl.textContent = e.message || 'Unable to connect to auth service yet.';
-      errorEl.classList.add('show');
-      btn.disabled = false;
-      btn.textContent = mode === 'signup' ? 'Create Account' : 'Sign In';
-    }
   }
 
   function addToCart(type, name, price) {
     cartCount++;
     updateCart();
     showToast(`✅ ${name} added to cart — $${price}`);
+    // POST to reservation service
     fetch('/api/bookings/cart', {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
@@ -728,6 +471,7 @@
     if (section === 'flights') { document.getElementById('flight-results').classList.remove('hidden'); }
   }
 
+  // Init
   loadHotels();
 </script>
 </body>

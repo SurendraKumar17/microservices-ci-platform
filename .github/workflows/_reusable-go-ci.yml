@@ -31,7 +31,7 @@ on:
       target-env:
         required: false
         type: string
-        default: staging
+        default: dev
     secrets:
       AWS_ROLE_ARN:
         required: true
@@ -122,7 +122,7 @@ jobs:
       - name: Unit tests (go test)
         if: steps.detect.outputs.changed == 'true'
         run: go test ./... -v -cover
-        continue-on-error: true   # PENDING-style: warn, don't block, until tests are filled in
+        continue-on-error: true
 
   # ── STAGE: scan (SCA - dependency vulnerabilities) ──────────────
   sca-scan:
@@ -156,6 +156,10 @@ jobs:
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: https://sonarcloud.io
+          SONAR_SCANNER_OPTS: >
+            -Dsonar.projectKey=${{ inputs.sonar-project-key }}
+            -Dsonar.organization=${{ github.repository_owner }}
+            -Dsonar.exclusions=vendor/**
 
   # ── STAGE: build (docker build, push, image scan, SBOM) ─────────
   build:
@@ -253,12 +257,10 @@ jobs:
   # ── STAGE: gitops (cross-repo) ──────────────────────────────────────
   gitops-update:
     needs: [build, sign-image]
-    # Only deploy on an actual push to develop (never on pull_request)
-    # main/release/* will get their own separate promotion workflow later
     if: github.event_name == 'push' && github.ref_name == 'develop'
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout skybook-gitops repo
+      - name: Checkout gitops repo
         uses: actions/checkout@v4
         with:
           repository: ${{ inputs.gitops-repo }}
