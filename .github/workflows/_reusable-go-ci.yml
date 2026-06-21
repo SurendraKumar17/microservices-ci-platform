@@ -288,4 +288,17 @@ jobs:
           fi
 
           git commit -m "gitops(${{ inputs.target-env }}): bump ${{ inputs.service-name }} to ${{ needs.build.outputs.image-tag }}"
-          git push origin HEAD:main
+
+          for attempt in 1 2 3 4 5; do
+            if git push origin HEAD:main; then
+              echo "Pushed successfully on attempt $attempt"
+              break
+            fi
+            echo "Push rejected (attempt $attempt) - pulling and retrying..."
+            git pull --rebase origin main
+            if [ "$attempt" = "5" ]; then
+              echo "Failed to push after 5 attempts"
+              exit 1
+            fi
+            sleep $((RANDOM % 5 + 1))
+          done
