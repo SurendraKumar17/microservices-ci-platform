@@ -18,7 +18,7 @@ jobs:
       service-name: frontend
       service-path: services/frontend
       ecr-registry: ${{ vars.ECR_REGISTRY }}
-      sonar-project-key: SurendraKumar17_Production-Grade-Microservices-on-Kubernetes
+      sonar-project-key: skybook-frontend
       gitops-repo: SurendraKumar17/microservices-cd-platform
       target-env: dev
     secrets:
