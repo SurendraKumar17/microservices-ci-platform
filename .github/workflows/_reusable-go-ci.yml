@@ -83,7 +83,7 @@ jobs:
             echo "${{ inputs.service-path }} unchanged - skipping"
           fi
 
-      - name: Secret scan (TruffleHog)
+      - name: ZZZ-PROOF-OF-LATEST-CODE-Secret-scan
         if: steps.detect.outputs.changed == 'true'
         shell: bash
         working-directory: ${{ github.workspace }}
