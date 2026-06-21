@@ -198,7 +198,7 @@ jobs:
             .
 
       - name: Scan image (Trivy)
-        uses: aquasecurity/trivy-action@0.24.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: ${{ inputs.ecr-registry }}/${{ inputs.service-name }}:${{ steps.tag.outputs.tag }}
           severity: 'CRITICAL,HIGH'
