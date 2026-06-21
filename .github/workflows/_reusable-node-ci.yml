@@ -44,7 +44,7 @@ on:
         required: true
 
 permissions:
-  id-token: write
+  id-token: write   # needed for OIDC -> AWS role assumption
   contents: read
 
 jobs:
@@ -98,13 +98,6 @@ jobs:
             --branch "${{ github.ref_name }}" \
             --only-verified \
             --fail
-
-      - name: Setup Node.js
-        if: steps.detect.outputs.changed == 'true'
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: ''            # explicitly disable auto-caching (no package-lock.json)
 
       - name: npm install
         if: steps.detect.outputs.changed == 'true'
