@@ -48,7 +48,9 @@ var mockHotels = []Hotel{
 func writeJSON(w http.ResponseWriter, status int, payload any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(payload)
+	if err := json.NewEncoder(w).Encode(payload); err != nil {
+		log.Printf("writeJSON: failed to encode response: %v", err)
+	}
 }
 
 func searchFlightsHandler(w http.ResponseWriter, r *http.Request) {
@@ -73,13 +75,11 @@ func main() {
 	if port == "" {
 		port = "8080"
 	}
-
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", healthHandler)
 	mux.HandleFunc("/ready", readyHandler)
 	mux.HandleFunc("/api/search/flights", searchFlightsHandler)
 	mux.HandleFunc("/api/search/hotels", searchHotelsHandler)
-
 	log.Printf("search-service running on port %s", port)
 	if err := http.ListenAndServe(":"+port, mux); err != nil {
 		log.Fatal(err)
