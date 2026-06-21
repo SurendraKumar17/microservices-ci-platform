@@ -13,12 +13,12 @@ on:
 
 jobs:
   ci:
-    uses: ./.github/workflows/_reusable-go-ci.yml
+    uses: ./.github/workflows/_reusable-go-ci-v2.yml
     with:
       service-name: payment-service
       service-path: services/payment-service
       ecr-registry: ${{ vars.ECR_REGISTRY }}
-      sonar-project-key: SurendraKumar17_Production-Grade-Microservices-on-Kubernetes
+      sonar-project-key: skybook-payment-service
       gitops-repo: SurendraKumar17/microservices-cd-platform
       target-env: dev
     secrets:

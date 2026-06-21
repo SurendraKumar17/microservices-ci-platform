@@ -13,12 +13,12 @@ on:
 
 jobs:
   ci:
-    uses: ./.github/workflows/_reusable-java-ci.yml
+    uses: ./.github/workflows/_reusable-java-ci-v2.yml
     with:
       service-name: booking-service
       service-path: services/booking-service
       ecr-registry: ${{ vars.ECR_REGISTRY }}
-      sonar-project-key: SurendraKumar17_Production-Grade-Microservices-on-Kubernetes
+      sonar-project-key: skybook-booking-service
       gitops-repo: SurendraKumar17/microservices-cd-platform
       target-env: dev
     secrets:
