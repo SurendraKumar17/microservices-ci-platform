@@ -44,7 +44,7 @@ on:
         required: true
 
 permissions:
-  id-token: write   # needed for OIDC -> AWS role assumption
+  id-token: write
   contents: read
 
 jobs:
@@ -104,6 +104,7 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '20'
+          cache: ''            # explicitly disable auto-caching (no package-lock.json)
 
       - name: npm install
         if: steps.detect.outputs.changed == 'true'
