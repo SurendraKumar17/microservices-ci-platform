@@ -83,16 +83,19 @@ jobs:
             echo "${{ inputs.service-path }} unchanged - skipping"
           fi
 
-      - name: ZZZ-PROOF-OF-LATEST-CODE-Secret-scan
+      - name: Secret scan (TruffleHog)
         if: steps.detect.outputs.changed == 'true'
         shell: bash
+        # NOTE: this step MUST run at the repo root, not inputs.service-path
+        # (the job-level `defaults.run.working-directory` above), because
+        # .git only exists at the repo root. Setting working-directory here
+        # explicitly overrides the job default for this one step.
         working-directory: ${{ github.workspace }}
         run: |
-          echo "DEBUG: github.workspace = ${{ github.workspace }}"
-          echo "DEBUG: pwd = $(pwd)"
-          echo "DEBUG: GITHUB_WORKSPACE env = $GITHUB_WORKSPACE"
           curl -sSfL https://raw.githubusercontent.com/trufflesecurity/trufflehog/main/scripts/install.sh \
             | sh -s -- -b /usr/local/bin
+          # Use an absolute file:// URL (not "file://.") so this can't
+          # silently break again if working-directory ever drifts.
           trufflehog git "file://${{ github.workspace }}" \
             --since-commit "${{ github.event.before }}" \
             --branch "${{ github.ref_name }}" \

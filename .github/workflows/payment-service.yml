@@ -13,7 +13,7 @@ on:
 
 jobs:
   ci:
-    uses: ./.github/workflows/_reusable-go-ci-v2.yml
+    uses: ./.github/workflows/_reusable-go-ci.yml
     with:
       service-name: payment-service
       service-path: services/payment-service
