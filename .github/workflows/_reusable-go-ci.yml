@@ -156,7 +156,7 @@ jobs:
           projectBaseDir: ${{ inputs.service-path }}
           args: >
             -Dsonar.projectKey=${{ inputs.sonar-project-key }}
-            -Dsonar.organization=${{ github.repository_owner }}
+            -Dsonar.organization=surendrakumar17
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: https://sonarcloud.io

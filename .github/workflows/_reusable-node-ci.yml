@@ -145,7 +145,7 @@ jobs:
           projectBaseDir: ${{ inputs.service-path }}
           args: >
             -Dsonar.projectKey=${{ inputs.sonar-project-key }}
-            -Dsonar.organization=${{ github.repository_owner }}
+            -Dsonar.organization=surendrakumar17
             -Dsonar.exclusions=node_modules/**,dist/**,coverage/**
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}

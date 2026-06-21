@@ -172,7 +172,7 @@ jobs:
         run: |
           mvn sonar:sonar \
             -Dsonar.projectKey=${{ inputs.sonar-project-key }} \
-            -Dsonar.organization=${{ github.repository_owner }} \
+            -Dsonar.organization=surendrakumar17 \
             -Dsonar.host.url=https://sonarcloud.io \
             -Dsonar.token=${{ secrets.SONAR_TOKEN }} \
             -Dsonar.java.binaries=target/classes
