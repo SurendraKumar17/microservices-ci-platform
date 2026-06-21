@@ -104,12 +104,11 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-          cache: 'npm'
-          cache-dependency-path: ${{ inputs.service-path }}/package-lock.json
 
-      - name: npm ci
+
+      - name: npm install
         if: steps.detect.outputs.changed == 'true'
-        run: npm ci
+        run: npm install
 
       - name: Lint Dockerfile (Hadolint)
         if: steps.detect.outputs.changed == 'true'
