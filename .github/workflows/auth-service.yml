@@ -13,7 +13,7 @@ on:
 
 jobs:
   ci:
-    uses: ./.github/workflows/_reusable-node-ci-v2.yml
+    uses: ./.github/workflows/_reusable-node-ci.yml
     with:
       service-name: auth-service
       service-path: services/auth-service
