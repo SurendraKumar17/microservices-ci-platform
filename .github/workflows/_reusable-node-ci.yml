@@ -44,7 +44,7 @@ on:
         required: true
 
 permissions:
-  id-token: write   # needed for OIDC -> AWS role assumption (replaces GitLab id_tokens)
+  id-token: write   # needed for OIDC -> AWS role assumption
   contents: read
 
 jobs:
@@ -59,7 +59,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0   # full history needed for git diff change-detection
+          fetch-depth: 0
 
       - name: Detect if this service changed
         id: detect
@@ -105,7 +105,6 @@ jobs:
         with:
           node-version: '20'
 
-
       - name: npm install
         if: steps.detect.outputs.changed == 'true'
         run: npm install
@@ -119,7 +118,7 @@ jobs:
       - name: Unit tests
         if: steps.detect.outputs.changed == 'true'
         run: npm run test:unit --if-present
-        continue-on-error: true   # PENDING-style: warn, don't block, until real tests exist
+        continue-on-error: true
 
   # ── STAGE: scan (SCA - dependency vulnerabilities) ──────────────
   sca-scan:
@@ -141,7 +140,7 @@ jobs:
     needs: validate
     if: needs.validate.outputs.changed == 'true' && inputs.sonar-project-key != ''
     runs-on: ubuntu-latest
-    continue-on-error: true   # allow_failure: true in GitLab
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
         with:
@@ -153,6 +152,10 @@ jobs:
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: https://sonarcloud.io
+          SONAR_SCANNER_OPTS: >
+            -Dsonar.projectKey=${{ inputs.sonar-project-key }}
+            -Dsonar.organization=${{ github.repository_owner }}
+            -Dsonar.exclusions=node_modules/**,dist/**,coverage/**
 
   # ── STAGE: build (docker build, push, image scan, SBOM) ─────────
   build:
@@ -196,7 +199,7 @@ jobs:
         with:
           image-ref: ${{ inputs.ecr-registry }}/${{ inputs.service-name }}:${{ steps.tag.outputs.tag }}
           severity: 'CRITICAL,HIGH'
-          exit-code: '0'   # report-only at this point, same as GitLab (mirrors --exit-code 0)
+          exit-code: '0'
           scanners: 'vuln,secret'
 
       - name: Generate SBOM (Syft, CycloneDX)
@@ -221,7 +224,7 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     permissions:
-      id-token: write   # needed for cosign keyless signing (sigstore OIDC)
+      id-token: write
       contents: read
     steps:
       - name: Install cosign
@@ -249,19 +252,12 @@ jobs:
             ${{ inputs.ecr-registry }}/${{ inputs.service-name }}:${{ needs.build.outputs.image-tag }}
 
   # ── STAGE: gitops (cross-repo) ──────────────────────────────────────
-  # This job checks out a DIFFERENT repo (skybook-gitops), bumps the
-  # image tag in that repo's values.yaml, commits, and pushes there.
-  # ArgoCD independently watches skybook-gitops and syncs the cluster
-  # when it sees the new commit — this job does NOT trigger ArgoCD
-  # directly, it only updates the source of truth ArgoCD reads from.
   gitops-update:
     needs: [build, sign-image]
-    # Only deploy on an actual push to develop (never on pull_request)
-    # main/release/* will get their own separate promotion workflow later
     if: github.event_name == 'push' && github.ref_name == 'develop'
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout skybook-gitops repo
+      - name: Checkout gitops repo
         uses: actions/checkout@v4
         with:
           repository: ${{ inputs.gitops-repo }}
