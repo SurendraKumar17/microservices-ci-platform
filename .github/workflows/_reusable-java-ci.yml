@@ -86,10 +86,11 @@ jobs:
       - name: Secret scan (TruffleHog)
         if: steps.detect.outputs.changed == 'true'
         shell: bash
+        working-directory: ${{ github.workspace }}
         run: |
           curl -sSfL https://raw.githubusercontent.com/trufflesecurity/trufflehog/main/scripts/install.sh \
             | sh -s -- -b /usr/local/bin
-          trufflehog git file://. \
+          trufflehog git "file://${{ github.workspace }}" \
             --since-commit "${{ github.event.before }}" \
             --branch "${{ github.ref_name }}" \
             --only-verified \
@@ -113,7 +114,7 @@ jobs:
       - name: Unit tests (Maven)
         if: steps.detect.outputs.changed == 'true'
         run: mvn test -q
-        continue-on-error: true
+        continue-on-error: true   # PENDING-style: warn, don't block, until real tests exist
 
       - name: Maven build (compile + package, skip tests - already ran above)
         if: steps.detect.outputs.changed == 'true'
@@ -166,7 +167,7 @@ jobs:
           name: maven-target-${{ inputs.service-name }}
           path: ${{ inputs.service-path }}/target
 
-      - name: SonarQube Scan (Maven plugin)
+      - name: SonarQube Scan (Maven plugin - picks up compiled .class files)
         working-directory: ${{ inputs.service-path }}
         run: |
           mvn sonar:sonar \
@@ -175,8 +176,6 @@ jobs:
             -Dsonar.host.url=https://sonarcloud.io \
             -Dsonar.token=${{ secrets.SONAR_TOKEN }} \
             -Dsonar.java.binaries=target/classes
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 
   # ── STAGE: build (docker build, push, image scan, SBOM) ─────────
   build:
@@ -280,10 +279,12 @@ jobs:
   # ── STAGE: gitops (cross-repo) ──────────────────────────────────────
   gitops-update:
     needs: [build, sign-image]
+    # Only deploy on an actual push to develop (never on pull_request)
+    # main/release/* will get their own separate promotion workflow later
     if: github.event_name == 'push' && github.ref_name == 'develop'
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout gitops repo
+      - name: Checkout skybook-gitops repo
         uses: actions/checkout@v4
         with:
           repository: ${{ inputs.gitops-repo }}

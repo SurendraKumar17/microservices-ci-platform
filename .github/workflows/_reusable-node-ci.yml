@@ -33,7 +33,7 @@ on:
         description: 'Which environments/<env>/values.yaml to bump'
         required: false
         type: string
-        default: staging
+        default: dev
     secrets:
       AWS_ROLE_ARN:
         required: true
@@ -61,23 +61,23 @@ jobs:
         with:
           fetch-depth: 0   # full history needed for git diff change-detection
 
-      # ── Inlined: detect-change action ───────────────────────────
       - name: Detect if this service changed
         id: detect
         shell: bash
         run: |
-          # workflow_dispatch (manual run) or first commit on a branch -> always treat as changed
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
             echo "Manually triggered -> treating as changed"
             exit 0
           fi
+
           BEFORE="${{ github.event.before }}"
           if [ -z "$BEFORE" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
             echo "No previous SHA (new branch) -> treating as changed"
             exit 0
           fi
+
           if git diff --name-only "$BEFORE" "${{ github.sha }}" | grep -q "^${{ inputs.service-path }}/"; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
             echo "${{ inputs.service-path }} changed"
@@ -86,19 +86,14 @@ jobs:
             echo "${{ inputs.service-path }} unchanged - skipping"
           fi
 
-      # ── Inlined: secret-scan action (TruffleHog) ────────────────
-      - name: Install TruffleHog
+      - name: Secret scan (TruffleHog)
         if: steps.detect.outputs.changed == 'true'
         shell: bash
+        working-directory: ${{ github.workspace }}
         run: |
           curl -sSfL https://raw.githubusercontent.com/trufflesecurity/trufflehog/main/scripts/install.sh \
             | sh -s -- -b /usr/local/bin
-
-      - name: Secret scan (TruffleHog) - verified secrets only
-        if: steps.detect.outputs.changed == 'true'
-        shell: bash
-        run: |
-          trufflehog git file://. \
+          trufflehog git "file://${{ github.workspace }}" \
             --since-commit "${{ github.event.before }}" \
             --branch "${{ github.ref_name }}" \
             --only-verified \
@@ -159,10 +154,6 @@ jobs:
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: https://sonarcloud.io
-          SONAR_SCANNER_OPTS: >
-            -Dsonar.projectKey=${{ inputs.sonar-project-key }}
-            -Dsonar.organization=${{ github.repository_owner }}
-            -Dsonar.exclusions=node_modules/**,dist/**,coverage/**
 
   # ── STAGE: build (docker build, push, image scan, SBOM) ─────────
   build:
@@ -259,8 +250,16 @@ jobs:
             ${{ inputs.ecr-registry }}/${{ inputs.service-name }}:${{ needs.build.outputs.image-tag }}
 
   # ── STAGE: gitops (cross-repo) ──────────────────────────────────────
+  # This job checks out a DIFFERENT repo (skybook-gitops), bumps the
+  # image tag in that repo's values.yaml, commits, and pushes there.
+  # ArgoCD independently watches skybook-gitops and syncs the cluster
+  # when it sees the new commit — this job does NOT trigger ArgoCD
+  # directly, it only updates the source of truth ArgoCD reads from.
   gitops-update:
     needs: [build, sign-image]
+    # Only deploy on an actual push to develop (never on pull_request)
+    # main/release/* will get their own separate promotion workflow later
+    if: github.event_name == 'push' && github.ref_name == 'develop'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout skybook-gitops repo
