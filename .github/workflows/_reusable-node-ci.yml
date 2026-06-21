@@ -266,7 +266,7 @@ jobs:
       - name: Bump image tag in values.yaml
         working-directory: gitops-repo
         run: |
-          FILE="environments/${{ inputs.target-env }}/values.yaml"
+          FILE="gitops/environments/${{ inputs.target-env }}/values.yaml"
           yq -i ".${{ inputs.service-name }}.tag = \"${{ needs.build.outputs.image-tag }}\"" "$FILE"
 
           git config user.name  "github-actions[bot]"
