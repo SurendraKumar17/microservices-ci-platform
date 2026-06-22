@@ -180,7 +180,7 @@ jobs:
   # ── STAGE: build (docker build, push, image scan, SBOM) ─────────
   build:
     needs: [validate, sca-scan]
-    if: needs.validate.outputs.changed == 'true'
+    if: needs.validate.outputs.changed == 'true' && github.event_name == 'push'
     runs-on: ubuntu-latest
     outputs:
       image-tag: ${{ steps.tag.outputs.tag }}
