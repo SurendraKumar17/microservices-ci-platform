@@ -16,7 +16,9 @@ func TestHealthHandler(t *testing.T) {
 		t.Errorf("expected 200, got %d", w.Code)
 	}
 	var body map[string]string
-	json.NewDecoder(w.Body).Decode(&body)
+	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
 	if body["status"] != "ok" {
 		t.Errorf("expected status ok, got %s", body["status"])
 	}
@@ -34,7 +36,9 @@ func TestReadyHandler(t *testing.T) {
 		t.Errorf("expected 200, got %d", w.Code)
 	}
 	var body map[string]string
-	json.NewDecoder(w.Body).Decode(&body)
+	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
 	if body["status"] != "ready" {
 		t.Errorf("expected status ready, got %s", body["status"])
 	}
@@ -49,7 +53,9 @@ func TestSearchFlightsHandler(t *testing.T) {
 		t.Errorf("expected 200, got %d", w.Code)
 	}
 	var body map[string]any
-	json.NewDecoder(w.Body).Decode(&body)
+	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
 	flights, ok := body["flights"].([]any)
 	if !ok {
 		t.Fatal("expected flights array in response")
@@ -68,7 +74,9 @@ func TestSearchHotelsHandler(t *testing.T) {
 		t.Errorf("expected 200, got %d", w.Code)
 	}
 	var body map[string]any
-	json.NewDecoder(w.Body).Decode(&body)
+	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
 	hotels, ok := body["hotels"].([]any)
 	if !ok {
 		t.Fatal("expected hotels array in response")
