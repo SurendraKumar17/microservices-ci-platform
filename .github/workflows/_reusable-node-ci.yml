@@ -11,6 +11,11 @@ on:
       service-name:
         required: true
         type: string
+      values-key:
+        description: 'Key name in values.yaml (may differ from service-name)'
+        required: false
+        type: string
+        default: ''
       service-path:
         required: true
         type: string
@@ -270,7 +275,11 @@ jobs:
         working-directory: gitops-repo
         run: |
           FILE="gitops/environments/${{ inputs.target-env }}/values.yaml"
-          yq -i ".${{ inputs.service-name }}.tag = \"${{ needs.build.outputs.image-tag }}\"" "$FILE"
+          KEY="${{ inputs.values-key }}"
+          if [ -z "$KEY" ]; then
+            KEY="${{ inputs.service-name }}"
+          fi
+          yq -i ".$KEY.tag = \"${{ needs.build.outputs.image-tag }}\"" "$FILE"
 
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -283,8 +292,6 @@ jobs:
 
           git commit -m "gitops(${{ inputs.target-env }}): bump ${{ inputs.service-name }} to ${{ needs.build.outputs.image-tag }}"
 
-          # Multiple services can push to this repo concurrently - retry with
-          # rebase on conflict instead of failing outright on the first race.
           for attempt in 1 2 3 4 5; do
             if git push origin HEAD:main; then
               echo "Pushed successfully on attempt $attempt"

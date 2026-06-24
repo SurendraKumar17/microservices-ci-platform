@@ -11,6 +11,11 @@ on:
       service-name:
         required: true
         type: string
+      values-key:
+        description: 'Key name in values.yaml (may differ from service-name)'
+        required: false
+        type: string
+        default: ''
       service-path:
         required: true
         type: string
@@ -120,7 +125,7 @@ jobs:
         if: steps.detect.outputs.changed == 'true'
         run: mvn clean package -DskipTests -q
 
-      - name: Upload build output (for SonarQube job to reuse - avoids rebuilding)
+      - name: Upload build output
         if: steps.detect.outputs.changed == 'true'
         uses: actions/upload-artifact@v4
         with:
@@ -167,7 +172,7 @@ jobs:
           name: maven-target-${{ inputs.service-name }}
           path: ${{ inputs.service-path }}/target
 
-      - name: SonarQube Scan (Maven plugin - picks up compiled .class files)
+      - name: SonarQube Scan
         working-directory: ${{ inputs.service-path }}
         run: |
           mvn sonar:sonar \
@@ -208,7 +213,7 @@ jobs:
       - name: Login to ECR
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Build image (jar already built in validate - Dockerfile just COPYs it)
+      - name: Build image
         working-directory: ${{ inputs.service-path }}
         run: |
           docker build \
@@ -285,7 +290,7 @@ jobs:
       group: gitops-repo-push
       cancel-in-progress: false
     steps:
-      - name: Checkout skybook-gitops repo
+      - name: Checkout gitops repo
         uses: actions/checkout@v4
         with:
           repository: ${{ inputs.gitops-repo }}
@@ -301,7 +306,11 @@ jobs:
         working-directory: gitops-repo
         run: |
           FILE="gitops/environments/${{ inputs.target-env }}/values.yaml"
-          yq -i ".${{ inputs.service-name }}.tag = \"${{ needs.build.outputs.image-tag }}\"" "$FILE"
+          KEY="${{ inputs.values-key }}"
+          if [ -z "$KEY" ]; then
+            KEY="${{ inputs.service-name }}"
+          fi
+          yq -i ".$KEY.tag = \"${{ needs.build.outputs.image-tag }}\"" "$FILE"
 
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"

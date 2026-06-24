@@ -16,6 +16,7 @@ jobs:
     uses: ./.github/workflows/_reusable-java-ci.yml
     with:
       service-name: booking-service
+      values-key: book
       service-path: services/booking-service
       ecr-registry: ${{ vars.ECR_REGISTRY }}
       sonar-project-key: SurendraKumar17_Production-Grade-Microservices-on-Kubernetes
