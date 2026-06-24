@@ -6,11 +6,7 @@ on:
     paths:
       - 'services/notification-service/**'
   pull_request:
-    branches: [develop]
-    paths:
-      - 'services/notification-service/**'
   workflow_dispatch:
-
 jobs:
   ci:
     uses: ./.github/workflows/_reusable-node-ci.yml

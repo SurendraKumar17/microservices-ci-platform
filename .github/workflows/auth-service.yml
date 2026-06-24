@@ -6,11 +6,7 @@ on:
     paths:
       - 'services/auth-service/**'
   pull_request:
-    branches: [develop]
-    paths:
-      - 'services/auth-service/**'
   workflow_dispatch:
-
 jobs:
   ci:
     uses: ./.github/workflows/_reusable-node-ci.yml

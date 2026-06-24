@@ -6,11 +6,7 @@ on:
     paths:
       - 'services/booking-service/**'
   pull_request:
-    branches: [develop]
-    paths:
-      - 'services/booking-service/**'
   workflow_dispatch:
-
 jobs:
   ci:
     uses: ./.github/workflows/_reusable-java-ci.yml
