@@ -146,7 +146,7 @@ jobs:
         uses: golangci/golangci-lint-action@v7
         with:
           working-directory: ${{ inputs.service-path }}
-          version: v2.1.6
+          version: v2.4.0   # v2.4.0+ is built with Go 1.25 (v2.1.x was still Go 1.24)
 
       - name: Unit tests (go test)
         if: steps.detect.outputs.changed == 'true'
