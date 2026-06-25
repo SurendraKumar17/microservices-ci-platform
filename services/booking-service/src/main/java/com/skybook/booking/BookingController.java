@@ -1,5 +1,6 @@
 package com.skybook.booking;
 
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.*;
@@ -10,9 +11,11 @@ import java.util.concurrent.atomic.AtomicInteger;
 @RequestMapping("/api/bookings")
 public class BookingController {
 
-    // in-memory storage - replace with a real DB (RDS) later
+    @Autowired
+    private BookingRepository bookingRepository;
+
+    // cart stays in-memory for now - short-lived, session-scoped data
     private final Map<Integer, List<Map<String, Object>>> cartByUser = new ConcurrentHashMap<>();
-    private final List<Map<String, Object>> bookings = new ArrayList<>();
     private final AtomicInteger bookingCounter = new AtomicInteger(1000);
 
     @PostMapping("/cart")
@@ -25,17 +28,16 @@ public class BookingController {
     @PostMapping("/checkout")
     public Map<String, Object> checkout(@RequestBody Map<String, Object> payload) {
         List<Map<String, Object>> items = (List<Map<String, Object>>) payload.getOrDefault("items", List.of());
-        List<Map<String, Object>> createdBookings = new ArrayList<>();
+        List<Booking> createdBookings = new ArrayList<>();
+
+        Object userIdRaw = payload.get("user_id");
+        Integer userId = userIdRaw != null ? Integer.valueOf(userIdRaw.toString()) : null;
+        String travelDate = payload.get("travel_date") != null ? payload.get("travel_date").toString() : null;
 
         for (Map<String, Object> item : items) {
             String ref = "SKY" + bookingCounter.incrementAndGet();
-            Map<String, Object> booking = new HashMap<>();
-            booking.put("bookingRef", ref);
-            booking.put("item", item);
-            booking.put("travelDate", payload.get("travel_date"));
-            booking.put("userId", payload.get("user_id"));
-            booking.put("status", "CONFIRMED");
-            bookings.add(booking);
+            Booking booking = new Booking(ref, userId, travelDate, item.toString(), "CONFIRMED");
+            bookingRepository.save(booking);
             createdBookings.add(booking);
         }
 
@@ -43,8 +45,14 @@ public class BookingController {
     }
 
     @GetMapping
-    public List<Map<String, Object>> listBookings() {
-        return bookings;
+    public List<Booking> listBookings() {
+        return bookingRepository.findAll();
+    }
+
+    @GetMapping("/{bookingRef}")
+    public Booking getBooking(@PathVariable String bookingRef) {
+        return bookingRepository.findByBookingRef(bookingRef)
+                .orElseThrow(() -> new RuntimeException("Booking not found: " + bookingRef));
     }
 
     @GetMapping("/health")
