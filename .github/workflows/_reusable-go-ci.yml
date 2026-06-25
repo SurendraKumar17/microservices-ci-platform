@@ -106,13 +106,19 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: '1.22'
-          cache-dependency-path: ${{ inputs.service-path }}/go.sum
+          cache-dependency-path: |
+            ${{ inputs.service-path }}/go.sum
+            ${{ inputs.service-path }}/go.mod
 
       - name: Lint Dockerfile (Hadolint)
         if: steps.detect.outputs.changed == 'true'
         run: |
           docker run --rm -i hadolint/hadolint \
             hadolint --failure-threshold warning - < Dockerfile
+
+      - name: Tidy modules
+        if: steps.detect.outputs.changed == 'true'
+        run: go mod tidy
 
       - name: go vet
         if: steps.detect.outputs.changed == 'true'

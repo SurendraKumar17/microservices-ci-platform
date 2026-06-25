@@ -5,8 +5,7 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm install --omit=dev
 
-COPY app.js ./
-COPY db.js ./    # ← add this
+COPY app.js db.js ./
 
 EXPOSE 3000
 CMD ["node", "app.js"]
