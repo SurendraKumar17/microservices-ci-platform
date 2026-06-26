@@ -14,7 +14,18 @@ var dbPool *pgxpool.Pool
 func connectDB(ctx context.Context) error {
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
-		return fmt.Errorf("DATABASE_URL is not set")
+		host := os.Getenv("DB_HOST")
+		port := os.Getenv("DB_PORT")
+		user := os.Getenv("DB_USER")
+		pass := os.Getenv("DB_PASSWORD")
+		name := os.Getenv("DB_NAME")
+		if host == "" {
+			return fmt.Errorf("DATABASE_URL or DB_HOST is not set")
+		}
+		if port == "" {
+			port = "5432"
+		}
+		dsn = fmt.Sprintf("postgresql://%s:%s@%s:%s/%s", user, pass, host, port, name)
 	}
 
 	pool, err := pgxpool.New(ctx, dsn)
