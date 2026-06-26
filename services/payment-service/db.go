@@ -25,7 +25,7 @@ func connectDB(ctx context.Context) error {
 		if port == "" {
 			port = "5432"
 		}
-		dsn = fmt.Sprintf("postgresql://%s:%s@%s:%s/%s", user, pass, host, port, name)
+		dsn = fmt.Sprintf("postgresql://%s:%s@%s:%s/%s?sslmode=no-verify", user, pass, host, port, name)
 	}
 
 	pool, err := pgxpool.New(ctx, dsn)
