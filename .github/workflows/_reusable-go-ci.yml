@@ -63,6 +63,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ github.ref_name }}
           fetch-depth: 0
 
       - name: Detect if this service changed
@@ -165,6 +166,12 @@ jobs:
         working-directory: ${{ inputs.service-path }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          # validate's tidy step may have just pushed a new commit to
+          # this branch (go.mod/go.sum bumps) — check out the current
+          # branch tip, not the immutable SHA that triggered this run,
+          # or this scan will run against pre-fix dependency versions.
+          ref: ${{ github.ref_name }}
       - name: Install Grype
         run: curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
       - name: Grype dependency scan
@@ -179,6 +186,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ github.ref_name }}
           fetch-depth: 0
       - name: SonarQube Scan
         uses: SonarSource/sonarqube-scan-action@v3
@@ -200,6 +208,8 @@ jobs:
       image-tag: ${{ steps.tag.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
 
       - name: Compute image tag
         id: tag
