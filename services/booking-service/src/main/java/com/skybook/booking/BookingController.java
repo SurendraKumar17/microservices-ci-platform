@@ -1,8 +1,9 @@
 package com.skybook.booking;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
-
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -10,6 +11,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 @RestController
 @RequestMapping("/api/bookings")
 public class BookingController {
+
+    private static final Logger log = LoggerFactory.getLogger(BookingController.class);
 
     @Autowired
     private BookingRepository bookingRepository;
@@ -22,6 +25,7 @@ public class BookingController {
     public Map<String, Object> addToCart(@RequestBody Map<String, Object> item) {
         int userId = 1; // single mock user for now - auth-service will provide real user identity later
         cartByUser.computeIfAbsent(userId, k -> new ArrayList<>()).add(item);
+        log.info("item added to cart, userId={}", userId);
         return Map.of("status", "added", "item", item);
     }
 
@@ -29,16 +33,21 @@ public class BookingController {
     public Map<String, Object> checkout(@RequestBody Map<String, Object> payload) {
         List<Map<String, Object>> items = (List<Map<String, Object>>) payload.getOrDefault("items", List.of());
         List<Booking> createdBookings = new ArrayList<>();
-
         Object userIdRaw = payload.get("user_id");
         Integer userId = userIdRaw != null ? Integer.valueOf(userIdRaw.toString()) : null;
         String travelDate = payload.get("travel_date") != null ? payload.get("travel_date").toString() : null;
 
-        for (Map<String, Object> item : items) {
-            String ref = "SKY" + bookingCounter.incrementAndGet();
-            Booking booking = new Booking(ref, userId, travelDate, item.toString(), "CONFIRMED");
-            bookingRepository.save(booking);
-            createdBookings.add(booking);
+        try {
+            for (Map<String, Object> item : items) {
+                String ref = "SKY" + bookingCounter.incrementAndGet();
+                Booking booking = new Booking(ref, userId, travelDate, item.toString(), "CONFIRMED");
+                bookingRepository.save(booking);
+                createdBookings.add(booking);
+                log.info("booking created, bookingRef={}, userId={}, travelDate={}", ref, userId, travelDate);
+            }
+        } catch (Exception e) {
+            log.error("checkout failed, userId={}, itemCount={}", userId, items.size(), e);
+            throw e;
         }
 
         return Map.of("status", "confirmed", "bookings", createdBookings);
@@ -52,7 +61,10 @@ public class BookingController {
     @GetMapping("/{bookingRef}")
     public Booking getBooking(@PathVariable String bookingRef) {
         return bookingRepository.findByBookingRef(bookingRef)
-                .orElseThrow(() -> new RuntimeException("Booking not found: " + bookingRef));
+                .orElseThrow(() -> {
+                    log.warn("booking not found, bookingRef={}", bookingRef);
+                    return new RuntimeException("Booking not found: " + bookingRef);
+                });
     }
 
     @GetMapping("/health")

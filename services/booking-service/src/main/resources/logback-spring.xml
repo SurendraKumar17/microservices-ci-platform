@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+    <!--
+      Structured JSON logging, mirroring the Node services' Pino setup:
+      one JSON object per line, with "service" and "environment" base
+      fields on every record so logs are easy to filter/correlate
+      across the whole stack in the log backend.
+    -->
+    <springProperty scope="context" name="serviceName" source="spring.application.name" defaultValue="booking-service"/>
+    <springProperty scope="context" name="environment" source="SPRING_PROFILES_ACTIVE" defaultValue="dev"/>
+
+    <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+            <customFields>{"service":"${serviceName}","environment":"${environment}"}</customFields>
+            <fieldNames>
+                <timestamp>time</timestamp>
+                <message>msg</message>
+                <logger>logger</logger>
+                <thread>thread</thread>
+                <level>level</level>
+                <levelValue>[ignore]</levelValue>
+                <version>[ignore]</version>
+            </fieldNames>
+            <timeZone>UTC</timeZone>
+        </encoder>
+    </appender>
+
+    <root level="${LOG_LEVEL:-INFO}">
+        <appender-ref ref="STDOUT"/>
+    </root>
+</configuration>

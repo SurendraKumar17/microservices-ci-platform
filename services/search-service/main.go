@@ -3,10 +3,19 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"log"
+	"fmt"
 	"net/http"
 	"os"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.uber.org/zap"
 )
 
 type Flight struct {
@@ -30,6 +39,27 @@ type Hotel struct {
 	Bg       string `json:"bg"`
 }
 
+var tracer = otel.Tracer("search-service")
+
+// ── Prometheus metrics ─────────────────────────────────────────────────────
+var (
+	httpRequestDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "http_request_duration_seconds",
+		Help:    "Duration of HTTP requests in seconds",
+		Buckets: []float64{0.01, 0.05, 0.1, 0.3, 0.5, 1, 2, 5},
+	}, []string{"method", "route", "status_code"})
+
+	httpRequestTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "http_requests_total",
+		Help: "Total number of HTTP requests",
+	}, []string{"method", "route", "status_code"})
+
+	searchFallbackTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "search_mock_fallback_total",
+		Help: "Total number of search requests served from mock data instead of the database",
+	}, []string{"resource", "reason"})
+)
+
 // Fallback data, used only if the database is unreachable or empty -
 // keeps the service answering requests instead of hard-failing if
 // Postgres has a transient issue.
@@ -49,18 +79,47 @@ var mockHotels = []Hotel{
 	{"Marina Bay Sands", "Singapore", "🌃", "★★★★★", 380, "#ecfeff"},
 }
 
+// statusRecorder lets us capture the status code written by handlers
+// so the metrics middleware can label requests correctly.
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (r *statusRecorder) WriteHeader(code int) {
+	r.status = code
+	r.ResponseWriter.WriteHeader(code)
+}
+
+func metricsMiddleware(route string, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		rec := &statusRecorder{ResponseWriter: w, status: 200}
+		timer := prometheus.NewTimer(prometheus.ObserverFunc(func(v float64) {
+			httpRequestDuration.WithLabelValues(r.Method, route, fmt.Sprintf("%d", rec.status)).Observe(v)
+		}))
+		next(rec, r)
+		timer.ObserveDuration()
+		httpRequestTotal.WithLabelValues(r.Method, route, fmt.Sprintf("%d", rec.status)).Inc()
+	}
+}
+
 func writeJSON(w http.ResponseWriter, status int, payload any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	if err := json.NewEncoder(w).Encode(payload); err != nil {
-		log.Printf("writeJSON: failed to encode response: %v", err)
+		Logger.Error("writeJSON: failed to encode response", zap.Error(err))
 	}
 }
 
 // fetchFlights queries the real flights table. Falls back to mock
 // data if dbPool is nil (DB never connected) or the query fails.
 func fetchFlights(ctx context.Context) []Flight {
+	ctx, span := tracer.Start(ctx, "fetch_flights")
+	defer span.End()
+
 	if dbPool == nil {
+		span.SetAttributes(attribute.Bool("search.fallback", true))
+		searchFallbackTotal.WithLabelValues("flights", "db_not_configured").Inc()
 		return mockFlights
 	}
 
@@ -71,7 +130,11 @@ func fetchFlights(ctx context.Context) []Flight {
 		LIMIT 50
 	`)
 	if err != nil {
-		log.Printf("fetchFlights: query failed, falling back to mock data: %v", err)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "query failed")
+		span.SetAttributes(attribute.Bool("search.fallback", true))
+		Logger.Warn("fetchFlights: query failed, falling back to mock data", zap.Error(err))
+		searchFallbackTotal.WithLabelValues("flights", "query_error").Inc()
 		return mockFlights
 	}
 	defer rows.Close()
@@ -84,7 +147,7 @@ func fetchFlights(ctx context.Context) []Flight {
 		var price float64
 
 		if err := rows.Scan(&flightNumber, &origin, &destination, &departureTime, &arrivalTime, &price); err != nil {
-			log.Printf("fetchFlights: row scan failed: %v", err)
+			Logger.Warn("fetchFlights: row scan failed", zap.Error(err))
 			continue
 		}
 
@@ -104,15 +167,23 @@ func fetchFlights(ctx context.Context) []Flight {
 
 	if len(flights) == 0 {
 		// table exists but has no rows yet - fall back rather than show nothing
+		span.SetAttributes(attribute.Bool("search.fallback", true))
+		searchFallbackTotal.WithLabelValues("flights", "empty_table").Inc()
 		return mockFlights
 	}
+	span.SetAttributes(attribute.Int("search.result_count", len(flights)))
 	return flights
 }
 
 // fetchHotels queries the real hotels table. Falls back to mock
 // data if dbPool is nil or the query fails.
 func fetchHotels(ctx context.Context) []Hotel {
+	ctx, span := tracer.Start(ctx, "fetch_hotels")
+	defer span.End()
+
 	if dbPool == nil {
+		span.SetAttributes(attribute.Bool("search.fallback", true))
+		searchFallbackTotal.WithLabelValues("hotels", "db_not_configured").Inc()
 		return mockHotels
 	}
 
@@ -123,7 +194,11 @@ func fetchHotels(ctx context.Context) []Hotel {
 		LIMIT 50
 	`)
 	if err != nil {
-		log.Printf("fetchHotels: query failed, falling back to mock data: %v", err)
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "query failed")
+		span.SetAttributes(attribute.Bool("search.fallback", true))
+		Logger.Warn("fetchHotels: query failed, falling back to mock data", zap.Error(err))
+		searchFallbackTotal.WithLabelValues("hotels", "query_error").Inc()
 		return mockHotels
 	}
 	defer rows.Close()
@@ -134,7 +209,7 @@ func fetchHotels(ctx context.Context) []Hotel {
 		var pricePerNight float64
 
 		if err := rows.Scan(&name, &location, &pricePerNight); err != nil {
-			log.Printf("fetchHotels: row scan failed: %v", err)
+			Logger.Warn("fetchHotels: row scan failed", zap.Error(err))
 			continue
 		}
 
@@ -149,8 +224,11 @@ func fetchHotels(ctx context.Context) []Hotel {
 	}
 
 	if len(hotels) == 0 {
+		span.SetAttributes(attribute.Bool("search.fallback", true))
+		searchFallbackTotal.WithLabelValues("hotels", "empty_table").Inc()
 		return mockHotels
 	}
+	span.SetAttributes(attribute.Int("search.result_count", len(hotels)))
 	return hotels
 }
 
@@ -182,12 +260,25 @@ func readyHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
+	initLogger()
+	defer Logger.Sync()
+
+	ctx := context.Background()
+
+	shutdownTracing, err := initTracing(ctx)
+	if err != nil {
+		Logger.Fatal("tracing init failed", zap.Error(err))
+	}
+	defer func() {
+		if err := shutdownTracing(ctx); err != nil {
+			Logger.Error("tracing shutdown error", zap.Error(err))
+		}
+	}()
+
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
 	}
-
-	ctx := context.Background()
 
 	// Connect to Postgres if DATABASE_URL is set. If it's not set, or
 	// the connection fails, the service still starts and serves mock
@@ -195,21 +286,26 @@ func main() {
 	// real database for every code change.
 	if os.Getenv("DATABASE_URL") != "" {
 		if err := connectDB(ctx); err != nil {
-			log.Printf("warning: database connection failed, falling back to mock data: %v", err)
+			Logger.Warn("database connection failed, falling back to mock data", zap.Error(err))
 		} else if err := initDB(ctx); err != nil {
-			log.Printf("warning: database schema setup failed: %v", err)
+			Logger.Warn("database schema setup failed", zap.Error(err))
 		}
 	} else {
-		log.Println("DATABASE_URL not set - running with mock data only")
+		Logger.Info("DATABASE_URL not set - running with mock data only")
 	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", healthHandler)
 	mux.HandleFunc("/ready", readyHandler)
-	mux.HandleFunc("/api/search/flights", searchFlightsHandler)
-	mux.HandleFunc("/api/search/hotels", searchHotelsHandler)
-	log.Printf("search-service running on port %s", port)
-	if err := http.ListenAndServe(":"+port, mux); err != nil {
-		log.Fatal(err)
+	mux.HandleFunc("/api/search/flights", metricsMiddleware("/api/search/flights", searchFlightsHandler))
+	mux.HandleFunc("/api/search/hotels", metricsMiddleware("/api/search/hotels", searchHotelsHandler))
+	mux.Handle("/metrics", promhttp.Handler())
+
+	// wrap the whole mux with otelhttp for automatic span creation per request
+	handler := otelhttp.NewHandler(mux, "search-service")
+
+	Logger.Info("search-service running", zap.String("port", port))
+	if err := http.ListenAndServe(":"+port, handler); err != nil {
+		Logger.Fatal("server error", zap.Error(err))
 	}
 }
