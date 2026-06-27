@@ -175,7 +175,11 @@ func readyHandler(w http.ResponseWriter, r *http.Request) {
 
 func main() {
 	initLogger()
-	defer Logger.Sync()
+	defer func() {
+        if err := Logger.Sync(); err != nil {
+          log.Printf("failed to sync logger: %v", err)
+        }
+    }()
 
 	ctx := context.Background()
 
