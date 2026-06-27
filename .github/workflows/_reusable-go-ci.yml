@@ -119,6 +119,8 @@ jobs:
           # before tidy so Grype SCA scan passes on the next stage.
           go get github.com/jackc/pgx/v5@v5.9.0
           go get golang.org/x/crypto@v0.35.0
+          go get google.golang.org/grpc@v1.79.3
+          go get golang.org/x/net@v0.55.0
           go mod tidy
           # If go mod tidy generated or updated go.sum, commit it back
           # so future runs don't need to re-download dependencies.
