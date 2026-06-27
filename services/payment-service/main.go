@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"log"
 	"encoding/json"
 	"fmt"
 	"math/rand"
