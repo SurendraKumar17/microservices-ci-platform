@@ -1,7 +1,7 @@
 #
 #  REUSABLE JAVA (SPRING BOOT) CI TEMPLATE
 #  Used by: booking-service
-#  Mirrors GitLab stages: validate -> scan -> sast -> build -> sign -> gitops
+#  Mirrors GitLab stages: validate -> scan -> sast -> build -> sign
 #
 name: _reusable-java-ci
 
@@ -30,20 +30,11 @@ on:
         required: false
         type: string
         default: ''
-      gitops-repo:
-        required: true
-        type: string
-      target-env:
-        required: false
-        type: string
-        default: dev
     secrets:
       AWS_ROLE_ARN:
         required: true
       SONAR_TOKEN:
         required: false
-      GITOPS_PAT:
-        required: true
 
 permissions:
   id-token: write
@@ -116,9 +107,9 @@ jobs:
           docker run --rm -i hadolint/hadolint \
             hadolint --failure-threshold warning - < Dockerfile
 
-      - name: Unit tests (Maven)
+      - name: Unit tests with coverage (Maven + JaCoCo)
         if: steps.detect.outputs.changed == 'true'
-        run: mvn test -q
+        run: mvn test jacoco:report -q
         continue-on-error: true
 
       - name: Maven build (compile + package, skip tests - already ran above)
@@ -172,6 +163,11 @@ jobs:
           name: maven-target-${{ inputs.service-name }}
           path: ${{ inputs.service-path }}/target
 
+      - name: Unit tests with coverage (Maven + JaCoCo)
+        working-directory: ${{ inputs.service-path }}
+        run: mvn test jacoco:report -q
+        continue-on-error: true
+
       - name: SonarQube Scan
         working-directory: ${{ inputs.service-path }}
         run: |
@@ -180,7 +176,8 @@ jobs:
             -Dsonar.organization=surendrakumar17 \
             -Dsonar.host.url=https://sonarcloud.io \
             -Dsonar.token=${{ secrets.SONAR_TOKEN }} \
-            -Dsonar.java.binaries=target/classes
+            -Dsonar.java.binaries=target/classes \
+            -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml
 
   # ── STAGE: build (docker build, push, image scan, SBOM) ─────────
   build:
@@ -280,59 +277,3 @@ jobs:
             --certificate-identity-regexp="https://github.com/${{ github.repository }}/.*" \
             --certificate-oidc-issuer="https://token.actions.githubusercontent.com" \
             ${{ inputs.ecr-registry }}/${{ inputs.service-name }}:${{ needs.build.outputs.image-tag }}
-
-  # ── STAGE: gitops (cross-repo) ──────────────────────────────────────
-  gitops-update:
-    needs: [build, sign-image]
-    if: github.event_name == 'push' && github.ref_name == 'develop'
-    runs-on: ubuntu-latest
-    concurrency:
-      group: gitops-repo-push
-      cancel-in-progress: false
-    steps:
-      - name: Checkout gitops repo
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ inputs.gitops-repo }}
-          token: ${{ secrets.GITOPS_PAT }}
-          path: gitops-repo
-
-      - name: Install yq
-        run: |
-          sudo wget -q https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -O /usr/local/bin/yq
-          sudo chmod +x /usr/local/bin/yq
-
-      - name: Bump image tag in values.yaml
-        working-directory: gitops-repo
-        run: |
-          FILE="gitops/environments/${{ inputs.target-env }}/values.yaml"
-          KEY="${{ inputs.values-key }}"
-          if [ -z "$KEY" ]; then
-            KEY="${{ inputs.service-name }}"
-          fi
-          yq -i ".$KEY.tag = \"${{ needs.build.outputs.image-tag }}\"" "$FILE"
-
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add "$FILE"
-
-          if git diff --staged --quiet; then
-            echo "Nothing to commit"
-            exit 0
-          fi
-
-          git commit -m "gitops(${{ inputs.target-env }}): bump ${{ inputs.service-name }} to ${{ needs.build.outputs.image-tag }}"
-
-          for attempt in 1 2 3 4 5; do
-            if git push origin HEAD:main; then
-              echo "Pushed successfully on attempt $attempt"
-              break
-            fi
-            echo "Push rejected (attempt $attempt) - pulling and retrying..."
-            git pull --rebase origin main
-            if [ "$attempt" = "5" ]; then
-              echo "Failed to push after 5 attempts"
-              exit 1
-            fi
-            sleep $((RANDOM % 5 + 1))
-          done

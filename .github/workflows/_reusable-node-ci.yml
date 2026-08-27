@@ -30,23 +30,11 @@ on:
         required: false
         type: string
         default: ''
-      gitops-repo:
-        description: 'org/repo of the gitops repository'
-        required: true
-        type: string
-      target-env:
-        description: 'Which environments/<env>/values.yaml to bump'
-        required: false
-        type: string
-        default: dev
     secrets:
       AWS_ROLE_ARN:
         required: true
       SONAR_TOKEN:
         required: false
-      GITOPS_PAT:
-        description: 'Fine-grained PAT with write access to the gitops repo only'
-        required: true
 
 permissions:
   id-token: write
@@ -114,10 +102,19 @@ jobs:
           docker run --rm -i hadolint/hadolint \
             hadolint --failure-threshold warning - < Dockerfile
 
-      - name: Unit tests
+      - name: Unit tests with coverage
         if: steps.detect.outputs.changed == 'true'
-        run: npm run test:unit --if-present
+        run: npm run test:unit --if-present -- --coverage
         continue-on-error: true
+
+      - name: Upload coverage artifact
+        if: steps.detect.outputs.changed == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ inputs.service-name }}
+          path: ${{ inputs.service-path }}/coverage
+          retention-days: 1
+          if-no-files-found: ignore
 
   # ── STAGE: scan (SCA - dependency vulnerabilities) ──────────────
   sca-scan:
@@ -144,6 +141,14 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Download coverage from validate job
+        uses: actions/download-artifact@v4
+        with:
+          name: coverage-${{ inputs.service-name }}
+          path: ${{ inputs.service-path }}/coverage
+        continue-on-error: true
+
       - name: SonarQube Scan
         uses: SonarSource/sonarqube-scan-action@v3
         with:
@@ -152,6 +157,7 @@ jobs:
             -Dsonar.projectKey=${{ inputs.sonar-project-key }}
             -Dsonar.organization=surendrakumar17
             -Dsonar.exclusions=node_modules/**,dist/**,coverage/**
+            -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: https://sonarcloud.io
@@ -249,59 +255,3 @@ jobs:
             --certificate-identity-regexp="https://github.com/${{ github.repository }}/.*" \
             --certificate-oidc-issuer="https://token.actions.githubusercontent.com" \
             ${{ inputs.ecr-registry }}/${{ inputs.service-name }}:${{ needs.build.outputs.image-tag }}
-
-  # ── STAGE: gitops (cross-repo) ──────────────────────────────────────
-  gitops-update:
-    needs: [build, sign-image]
-    if: github.event_name == 'push' && github.ref_name == 'develop'
-    runs-on: ubuntu-latest
-    concurrency:
-      group: gitops-repo-push
-      cancel-in-progress: false
-    steps:
-      - name: Checkout gitops repo
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ inputs.gitops-repo }}
-          token: ${{ secrets.GITOPS_PAT }}
-          path: gitops-repo
-
-      - name: Install yq
-        run: |
-          sudo wget -q https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -O /usr/local/bin/yq
-          sudo chmod +x /usr/local/bin/yq
-
-      - name: Bump image tag in values.yaml
-        working-directory: gitops-repo
-        run: |
-          FILE="gitops/environments/${{ inputs.target-env }}/values.yaml"
-          KEY="${{ inputs.values-key }}"
-          if [ -z "$KEY" ]; then
-            KEY="${{ inputs.service-name }}"
-          fi
-          yq -i ".$KEY.tag = \"${{ needs.build.outputs.image-tag }}\"" "$FILE"
-
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add "$FILE"
-
-          if git diff --staged --quiet; then
-            echo "Nothing to commit"
-            exit 0
-          fi
-
-          git commit -m "gitops(${{ inputs.target-env }}): bump ${{ inputs.service-name }} to ${{ needs.build.outputs.image-tag }}"
-
-          for attempt in 1 2 3 4 5; do
-            if git push origin HEAD:main; then
-              echo "Pushed successfully on attempt $attempt"
-              break
-            fi
-            echo "Push rejected (attempt $attempt) - pulling and retrying..."
-            git pull --rebase origin main
-            if [ "$attempt" = "5" ]; then
-              echo "Failed to push after 5 attempts"
-              exit 1
-            fi
-            sleep $((RANDOM % 5 + 1))
-          done

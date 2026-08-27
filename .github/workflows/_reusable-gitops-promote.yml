@@ -1,0 +1,126 @@
+#
+#  REUSABLE GITOPS PROMOTION TEMPLATE
+#  Used by: all 6 services for staging/prod promotion
+#  Flow: verify source env healthy → manual approval → promote tag
+#
+name: _reusable-gitops-promote
+
+on:
+  workflow_call:
+    inputs:
+      service-name:
+        required: true
+        type: string
+      values-key:
+        required: true
+        type: string
+      gitops-repo:
+        required: true
+        type: string
+      source-env:
+        required: true
+        type: string       # e.g. staging
+      target-env:
+        required: true
+        type: string       # e.g. prod
+      argocd-app-name:
+        description: 'ArgoCD Application name for the source env (e.g. bookmytrip-staging). Leave blank to skip the health check.'
+        required: false
+        type: string
+        default: ''
+      argocd-server:
+        required: false
+        type: string
+        default: ''
+    secrets:
+      GITOPS_PAT:
+        required: true
+      ARGOCD_TOKEN:
+        required: false
+
+jobs:
+  # ── STEP 1: verify source env is healthy ──────────────────────────
+  verify-source:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wait for ArgoCD ${{ inputs.source-env }} Synced/Healthy
+        if: inputs.argocd-server != '' && inputs.argocd-app-name != ''
+        run: |
+          echo "Checking ${{ inputs.argocd-app-name }} in ${{ inputs.source-env }}..."
+          for i in $(seq 1 20); do
+            RESPONSE=$(curl -sk \
+              -H "Authorization: Bearer ${{ secrets.ARGOCD_TOKEN }}" \
+              ${{ inputs.argocd-server }}/api/v1/applications/${{ inputs.argocd-app-name }})
+
+            SYNC=$(echo $RESPONSE   | jq -r '.status.sync.status')
+            HEALTH=$(echo $RESPONSE | jq -r '.status.health.status')
+            echo "Attempt $i → Sync: $SYNC | Health: $HEALTH"
+
+            if [ "$SYNC" = "Synced" ] && [ "$HEALTH" = "Healthy" ]; then
+              echo "✅ ${{ inputs.source-env }} is Synced and Healthy!"
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "❌ ${{ inputs.source-env }} did not become healthy in time"
+          exit 1
+
+  # ── STEP 2: manual approval gate ──────────────────────────────────
+  approve:
+    needs: verify-source
+    environment: ${{ inputs.target-env }}   # approval gate
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "✅ Approved to promote to ${{ inputs.target-env }}"
+
+  # ── STEP 3: promote tag ───────────────────────────────────────────
+  promote:
+    needs: approve
+    runs-on: ubuntu-latest
+    concurrency:
+      group: gitops-repo-push
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.gitops-repo }}
+          token: ${{ secrets.GITOPS_PAT }}
+          path: gitops-repo
+
+      - name: Install yq
+        run: |
+          sudo wget -q https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 \
+            -O /usr/local/bin/yq && sudo chmod +x /usr/local/bin/yq
+
+      - name: Promote ${{ inputs.values-key }} tag → ${{ inputs.target-env }}
+        working-directory: gitops-repo
+        run: |
+          SRC="gitops/environments/${{ inputs.source-env }}/values.yaml"
+          TGT="gitops/environments/${{ inputs.target-env }}/values.yaml"
+
+          TAG=$(yq '.${{ inputs.values-key }}.tag' $SRC)
+          echo "Promoting ${{ inputs.service-name }} tag: $TAG → ${{ inputs.target-env }}"
+
+          yq -i '.${{ inputs.values-key }}.tag = "'$TAG'"' $TGT
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add $TGT
+
+          git diff --staged --quiet && echo "Nothing to commit" && exit 0
+
+          git commit -m "gitops(${{ inputs.target-env }}): promote ${{ inputs.service-name }} → $TAG"
+
+          for attempt in 1 2 3 4 5; do
+            if git push origin HEAD:main; then
+              echo "✅ Pushed on attempt $attempt"
+              break
+            fi
+            echo "Push rejected (attempt $attempt) - retrying..."
+            git pull --rebase origin main
+            if [ "$attempt" = "5" ]; then
+              echo "❌ Failed after 5 attempts"
+              exit 1
+            fi
+            sleep $((RANDOM % 5 + 1))
+          done

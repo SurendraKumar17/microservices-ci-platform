@@ -7,6 +7,7 @@ on:
       - 'services/booking-service/**'
   pull_request:
   workflow_dispatch:
+
 jobs:
   ci:
     uses: ./.github/workflows/_reusable-java-ci.yml
@@ -15,10 +16,35 @@ jobs:
       values-key: book
       service-path: services/booking-service
       ecr-registry: ${{ vars.ECR_REGISTRY }}
-      sonar-project-key: SurendraKumar17_Production-Grade-Microservices-on-Kubernetes
-      gitops-repo: SurendraKumar17/microservices-cd-platform
-      target-env: dev
+      sonar-project-key: SurendraKumar17_microservices-ci-platform
     secrets:
       AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
       SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+  promote-staging:
+    needs: ci
+    uses: ./.github/workflows/_reusable-gitops-promote.yml
+    with:
+      service-name: booking-service
+      values-key: book
+      gitops-repo: SurendraKumar17/gitops-k8s-platform
+      source-env: dev
+      target-env: staging
+    secrets:
       GITOPS_PAT: ${{ secrets.GITOPS_PAT }}
+      ARGOCD_TOKEN: ${{ secrets.ARGOCD_TOKEN }}
+
+  promote-prod:
+    needs: promote-staging
+    uses: ./.github/workflows/_reusable-gitops-promote.yml
+    with:
+      service-name: booking-service
+      values-key: book
+      gitops-repo: SurendraKumar17/gitops-k8s-platform
+      source-env: staging
+      target-env: prod
+      argocd-app-name: bookmytrip-staging
+      argocd-server: https://YOUR-ARGOCD-SERVER
+    secrets:
+      GITOPS_PAT: ${{ secrets.GITOPS_PAT }}
+      ARGOCD_TOKEN: ${{ secrets.ARGOCD_TOKEN }}
