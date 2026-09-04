@@ -47,7 +47,7 @@ jobs:
       source-env: staging
       target-env: prod
       argocd-app-name: bookmytrip-staging
-      argocd-server: https://YOUR-ARGOCD-SERVER
+      argocd-server: http://k8s-argocd-argocdin-860d4e6d33-540967312.us-east-1.elb.amazonaws.com
     secrets:
       GITOPS_PAT: ${{ secrets.GITOPS_PAT }}
       ARGOCD_TOKEN: ${{ secrets.ARGOCD_TOKEN }}
