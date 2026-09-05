@@ -35,6 +35,10 @@ on:
         required: true
       SONAR_TOKEN:
         required: false
+    outputs:
+      image-tag:
+        description: 'The image tag built and pushed to ECR'
+        value: ${{ jobs.build.outputs.image-tag }}
 
 permissions:
   id-token: write

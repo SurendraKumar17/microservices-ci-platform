@@ -21,8 +21,35 @@ jobs:
       AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
       SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 
-  promote-staging:
+  update-dev-tag:
     needs: ci
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: SurendraKumar17/gitops-k8s-platform
+          token: ${{ secrets.GITOPS_PAT }}
+          path: gitops-repo
+
+      - name: Install yq
+        run: |
+          sudo wget -q https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 \
+            -O /usr/local/bin/yq && sudo chmod +x /usr/local/bin/yq
+
+      - name: Write real image tag into dev values.yaml
+        working-directory: gitops-repo
+        run: |
+          yq -i '.notification.tag = "${{ needs.ci.outputs.image-tag }}"' gitops/environments/dev/values.yaml
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add gitops/environments/dev/values.yaml
+          git diff --staged --quiet && echo "Nothing to commit" && exit 0
+          git commit -m "gitops(dev): update notification-service tag → ${{ needs.ci.outputs.image-tag }}"
+          git push origin main
+
+  promote-staging:
+    needs: update-dev-tag
     uses: ./.github/workflows/_reusable-gitops-promote.yml
     with:
       service-name: notification-service
