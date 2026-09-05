@@ -5,6 +5,9 @@ on:
     branches: [develop]
     paths:
       - 'services/notification-service/**'
+      - '.github/workflows/notification-service-ci.yml'
+      - '.github/workflows/_reusable-node-ci.yml'
+      - '.github/workflows/_reusable-gitops-promote.yml'
   pull_request:
   workflow_dispatch:
 
